@@ -1,9 +1,12 @@
+/******************************************************
+ * Project
+ ******************************************************/
 
-/******************************************************/
-/* includes */
+
+
+/******************************************************
+ * Includes */
 #include <Arduino.h>
-
-#include "esp_task_wdt.h"
 
 #include <LiquidCrystal_I2C.h>
 #include <Wire.h>
@@ -13,12 +16,22 @@
 #include <driver/adc.h>
 #include <DHT.h>
 
+#include <esp_task_wdt.h>
+
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <WiFiClient.h>
 
-/******************************************************/
-/* PINOUT */
+#include <FS.h>
+#include <SPIFFS.h>
+#include <map>
+
+ /* End of Includes 
+ ******************************************************/
+
+/******************************************************
+ * PINOUT */
 #define DHT_22_SDA_PIN_IN_25 25
 #define MQ_2_AO_PIN_IN_ADC_35 35
 #define BUZZER_PIN_OUT_33 33
@@ -29,17 +42,33 @@
 #define I2C_SCL_PIN_22 22
 #define LED_BUILTIN 2
 
-/******************************************************/
-/* OS SETTINGS */
+/* End of PINOUT 
+ ******************************************************/
+
+/* Debug Settings */
+#define DEGUG_DATA true
+#define DEGUG_COUNTER true
+#define DEBUG_INIT true
+#define DEBUG_POT_PWM false
+#define DEBUG_HTTP true
+
+/******************************************************
+ * OS SETTINGS */
+
 #define MINOR_TASK_SIZE_BYTES 8192     
 #define MAJOR_TASK_SIZE_BYTES 16384    
 #define TASK_PERIOD_2S 2000u
 #define TASK_PERIOD_100MS 100u
 #define TASK_PERIOD_10S 10000u
 
+/* Semaphores */
 SemaphoreHandle_t xInitSemaphore_C0;
 SemaphoreHandle_t xInitSemaphore_C1;
 
+/* Queues */
+QueueHandle_t xUploadQueue;
+
+/* Task Handlers */
 TaskHandle_t Task_C0_Init_handle = NULL;
 TaskHandle_t Task_C0_2s_handle = NULL;
 TaskHandle_t Task_C0_100ms_handle = NULL;
@@ -47,27 +76,51 @@ TaskHandle_t Task_C0_100ms_handle = NULL;
 TaskHandle_t Task_C1_Init_handle = NULL;
 TaskHandle_t Task_C1_10s_handle = NULL;
 
-/* Debug Settings */
-#define DEGUG_DATA false
-#define DEGUG_COUNTER true
-#define DEBUG_INIT false
-#define DEBUG_POT_PWM false
-#define DEBUG_HTTP false
+TaskHandle_t Task_AsyncEvents_C1_handle = NULL;
 
 /* Task Counters */
+static bool init_flag_C0 = false;
+static bool init_flag_C1 = false;
 static volatile signed long long cnt_100ms_C0 = 0;
 static volatile signed long long cnt_2s_C0 = 0;
 static volatile signed long long cnt_10s_C1 = 0;
+static volatile signed long long cnt_AsyncEvents_C1 = 0;
 
-/******************************************************/
-/* SYS STATUS */
+/* Critical area mux for task counters*/
+portMUX_TYPE myMutex = portMUX_INITIALIZER_UNLOCKED;
+
+/* Cores */
+typedef enum {
+  ESP_CORE_0 = 0u,
+  ESP_CORE_1
+} Cores;
+
+/* Task info struct */
+typedef struct
+{
+    void (*taskFunction)(void*);
+    const char* taskName;
+    uint32_t stackSize;
+    void* params;
+    UBaseType_t priority;
+    TaskHandle_t* handle;
+    Cores core;
+} TaskDefinition;
+
+/* End of OS SETTINGS 
+ *****************************************************/
+
+/******************************************************
+ * SYS STATUS */
 static volatile bool co_status;
 static volatile bool lpg_status;
 static volatile bool smoke_status;
 static volatile bool alarm_status;
+ /* End of SYS STATUS 
+ ******************************************************/
 
-/******************************************************/
-/* ADC CONFIG */
+/******************************************************
+ * ADC CONFIG */
 #define ADC_WIDTH ADC_WIDTH_BIT_12
 #define ADC_ATTENUATION ADC_ATTEN_DB_11
 #define DEFAULT_VREF 1100u
@@ -81,10 +134,11 @@ typedef enum {
 } Adc_Calib_Values;
 uint8_t Adc_CalibrationSettingValue;
 
+/* End of ADC CONFIG 
+ ******************************************************/
+
 /******************************************************
  * Wifi Settings */
-const char *ssid = "CDIDC";
-const char *password = "SkodaOctavia2005";
 
 /* Connection flag */
 bool wifi_connected;
@@ -92,8 +146,21 @@ bool wifi_connected;
 /* Google Scripts Location */
 String googleScriptURL = "https://script.google.com/a/macros/student.tuiasi.ro/s/AKfycbxoNbKtwmbg_m_UjYyqUhhDF4yr9LLUXoEMrd9-jK2HmoFF6gF_khVkUFtDfsQDn1s/exec";
 
-/******************************************************/
-/* Buzzer volume control CONFIG */
+/* File that keep wifi credentials */
+#define FORMAT_SPIFFS_IF_FAILED true
+#define WIFI_CONFIG_FILE "/wifi_networks.txt"
+
+std::map<String, String> wifiNetworks;
+
+/* Wifi timeout */
+#define WIFI_TIMEOUT_MS 10000u
+
+/* End of Wifi Settings 
+ *****************************************************/
+
+
+/******************************************************
+ * Buzzer volume control CONFIG */
 
 /* PWM Channel 0-15 */
 #define LEDC_CHANNEL 0
@@ -112,8 +179,11 @@ typedef struct{
 } VolumeSettings;
 VolumeSettings volumeSettings ;
 
-/******************************************************/
-/* MQ2 CONFIG */
+/* End of Buzzer volume control CONFIG 
+ ******************************************************/
+
+/******************************************************
+ * MQ2 CONFIG */
 
 /*
  * define the load resistance on the board, in kilo ohms
@@ -163,15 +233,17 @@ int READ_SAMPLE_TIMES=10;
  * to the original curve. 
  * data format:{ x, y, slope}; point1: (lg200, 0.21), point2: (lg10000, -0.59)
  */
-float           LPGCurve[3]  =  {2.3,0.21,-0.47};   
- 
+// float           LPGCurve[3]  =  {2.3,0.21,-0.47};   
+float           LPGCurve[3]  =  {2.3,0.21,-1.04}; 
+
 /*
  * two points are taken from the curve.
  * with these two points, a line is formed which is "approximately equivalent" 
  * to the original curve.
  * data format:{ x, y, slope}; point1: (lg200, 0.72), point2: (lg10000,  0.15) 
  */
-float           COCurve[3]  =  {2.3,0.72,-0.34};    
+// float           COCurve[3]  =  {2.3,0.72,-0.34};  
+float           COCurve[3]  =  {2.3,0.72,-0.78};  
 
 /*
  * two points are taken from the curve.
@@ -179,27 +251,39 @@ float           COCurve[3]  =  {2.3,0.72,-0.34};
  * to the original curve.
  * data format:{ x, y, slope}; point1: (lg200, 0.53), point2: (lg10000,  -0.22) 
  */
-float           SmokeCurve[3] ={2.3,0.53,-0.44};    
+// float           SmokeCurve[3] ={2.3,0.53,-0.44}; 
+float           SmokeCurve[3] ={2.3,0.53,-0.98};    
                                                                                                                                                                                                  
 /*
  * Ro is initialized to 10 kilo ohms
  */
-float           Ro           =  10;                 
+float           Ro           =  10;
 
-/******************************************************/
-/* LCD CONFIG */
-#define LCD_ADDR 0x27
+ /* End of MQ2 CONFIG 
+ ******************************************************/
+
+/******************************************************
+ * LCD CONFIG */
+
+#define LCD_ADDR 0x3F
 #define LCD_COLUMNS 16u
 #define LCD_ROWS 2u
 /* Pointer used for INIT function of the LCD */
 LiquidCrystal_I2C* lcd_ptr = nullptr;
 
-/******************************************************/
-/* DHT CONFIG */
-#define DHT_TYPE DHT22
+ /* End of LCD CONFIG 
+  ******************************************************/
+
+/******************************************************
+ * DHT CONFIG */
+
+#define DHT_TYPE DHT11
 #define DHT_PIN  DHT_22_SDA_PIN_IN_25
 /* Pointer used for INIT function of the DHT Sensor */
 DHT* dht_ptr = nullptr;
+
+ /* DHT CONFIG 
+ ******************************************************/
 
 /*
  * Struct to keep the byte vectors for custom chars
@@ -342,20 +426,6 @@ typedef enum {
 } INIT_STATUS;
 
 
-/* 
- * WDT Config
- */
-esp_task_wdt_config_t wdtConfig = {
-    .timeout_ms = 30000,           
-    .idle_core_mask = (1 << 0),    
-    .trigger_panic = true          
-};
-
-
-/* Critical area mux */
-portMUX_TYPE myMutex = portMUX_INITIALIZER_UNLOCKED;
-
-
 /******************************************************
  * FUNCTION PROTOTYPES */
 
@@ -370,6 +440,29 @@ void Task_C0_100ms(void *pvParameters);
 
 void Task_C1_Init(void *pvParameters);
 void Task_C1_10s(void *pvParameters);
+
+/* This task is queue driven when alert data from mq 2 is received from the queue the task is active */
+void Task_AsyncEvents_C1(void *pvParameters);
+
+/* Tasks list */
+TaskDefinition taskList[] = {
+    /* Core 0 timed tasks */
+    { Task_C0_Init,   "Task_C0_Init",   MAJOR_TASK_SIZE_BYTES, NULL, 20, &Task_C0_Init_handle, ESP_CORE_0 },
+    { Task_C0_2s,     "Task_C0_2s",     MAJOR_TASK_SIZE_BYTES, NULL, 10, &Task_C0_2s_handle,   ESP_CORE_0 },
+    { Task_C0_100ms,  "Task_C0_100ms",  MAJOR_TASK_SIZE_BYTES, NULL, 20, &Task_C0_100ms_handle,ESP_CORE_0 },
+    /* Core 1 timed tasks */
+    { Task_C1_Init,   "Task_C1_Init",   MAJOR_TASK_SIZE_BYTES, NULL, 20, &Task_C1_Init_handle, ESP_CORE_1 },
+    { Task_C1_10s,    "Task_C1_10s",    MAJOR_TASK_SIZE_BYTES, NULL, 15, &Task_C1_10s_handle,  ESP_CORE_1 },
+    /* EVent driven tasks */
+    { Task_AsyncEvents_C1, "Task_AsyncEvents_C1", MAJOR_TASK_SIZE_BYTES, NULL, 20, &Task_AsyncEvents_C1_handle, ESP_CORE_1}
+};
+
+void OS_CreateTask(void (*taskInterface)(void *), const char* taskName, uint32_t stackSize,
+                   void* taskParams, UBaseType_t priority, TaskHandle_t* taskHandler, Cores core);
+void OS_ValidateTaskCreation(BaseType_t xReturned, const char* taskName);
+void OS_CreateQueues();
+void OS_CreateTaskSemphForCores();
+void OS_InitOS();
 
 /*----Init-Functions------------------------------------------*/
 INIT_STATUS Port_Init();
@@ -403,147 +496,51 @@ void LimitAlertCheck(SensorData* data, VolumeSettings* settings);
 void DebugPrint(SensorData* data, VolumeSettings* settings);
 
 /*----Wifi-Functions------------------------------------------*/
-void Wifi_Callback(void (*fptr)(void));
-void Wifi_SetupNetworkConnection();
+bool Wifi_Callback(bool (*fptr)(void));
+bool Wifi_SetupNetworkConnection();
 void Wifi_SendDataToGoogleSpreadsheets(SensorData* data);
+void Wifi_WaitForConnection();
+void Wifi_CheckConnectionStatus(const char* ssid);
 
 /*----Volume-Settings-----------------------------------------*/
 void ManageBuzzerVolume(VolumeSettings* settings, uint8_t pot_pin);
 
-void cleanup();
+/*----Setup-Functions-----------------------------------------*/
+void PSRAM_Check();
+void CheckObjectPointers();
 
-/******************************************************/
-/* ARDUINO CORE FUNCTIONS */
+/*----SPIFFS-Functions----------------------------------------*/
+bool SPIFFS_Init();
+File SPIFFS_OpenFile(const char* path);
+/******************************************************
+ * ARDUINO CORE FUNCTIONS */
 
 void setup()
 {
-  Serial.begin(115200);
-  vTaskDelay(500 / portTICK_PERIOD_MS); 
-  Serial.println("[setup][Serial.begin(115200);]");
+    /* Strat serial communication */
+    vTaskDelay(1000 / portTICK_PERIOD_MS); 
+    Serial.begin(115200);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    Serial.println("[SW_VERSION][NAME:<Esp32_EnvMonitor_Rework_2.ino>][DATE:3.6.2025]");
+  
+    /* Check PSRAM */
+    PSRAM_Check();
 
-  // esp_task_wdt_init(&wdtConfig); 
-  // Serial.println("[setup][esp_task_wdt_init(&wdtConfig);]"); 
-  esp_task_wdt_delete(xTaskGetCurrentTaskHandle());   
-  esp_task_wdt_add(xTaskGetCurrentTaskHandle());
-  Serial.println("[setup][esp_task_wdt_add(xTaskGetCurrentTaskHandle());]");   
+    /* Check object pointers */
+    CheckObjectPointers();
 
-  if (psramInit()) 
-  {
-        Serial.println("[setup]PSRAM is initialized");
-        Serial.print("[setup][Total PSRAM: ]");
-        Serial.println(ESP.getPsramSize());
-        Serial.print("[setup][Free PSRAM: ]");
-        Serial.println(ESP.getFreePsram());
-  } 
-  else 
-  {
-        Serial.println("[setup][PSRAM is not available]");
-  }
+    /* Init SPIFFS */ 
+    SPIFFS_Init();
 
-  if (lcd_ptr == nullptr) 
-  {
-    Serial.println("[setup][!lcd_ptr]");
-  }
-  if (dht_ptr == nullptr) 
-  {
-      Serial.println("[setup][!dht_ptr]");
-  }
-
-  /* Semaphore for C0 tasks */
-  xInitSemaphore_C0 = xSemaphoreCreateCounting(2, 0);
-  if (xInitSemaphore_C0 == NULL) 
-  {
-    Serial.println("[setup][Failed to create C0 semaphore]");
-    while(1); 
-  }
-  else
-  {
-    Serial.println("[setup][Created C0 semaphore]");
-  }
-
-  /* Semaphore for C1 tasks */
-  xInitSemaphore_C1 = xSemaphoreCreateBinary();
-  if (xInitSemaphore_C1 == NULL) 
-  {
-    Serial.println("[setup][Failed to create C1 semaphore]");
-    while(1); 
-  }
-  else
-  {
-    Serial.println("[setup][Created C1 semaphore]");
-  }
-
-
-  /* Create tasks with error checking */
-  BaseType_t xReturned_Task_C0_Init;
-  BaseType_t xReturned_Task_C0_2s;
-  BaseType_t xReturned_Task_C0_100ms;
-  BaseType_t xReturned_Task_C1_Init;
-  BaseType_t xReturned_Task_C1_10s;
-
-  /* Task_C0_Init */
-  xReturned_Task_C0_Init = xTaskCreatePinnedToCore(&Task_C0_Init, "Task_C0_Init", MAJOR_TASK_SIZE_BYTES, NULL, 24, &Task_C0_Init_handle, 0);
-  if (xReturned_Task_C0_Init != pdPASS) 
-  {
-    Serial.println("[setup][Failed to create Task_C0_Init]");
-  }
-  else
-  {
-    Serial.println("[setup][Created Task_C0_Init]");
-  }
-
-  /* Task_C0_2s */
-  xReturned_Task_C0_2s = xTaskCreatePinnedToCore(&Task_C0_2s, "Task_C0_2s", MAJOR_TASK_SIZE_BYTES, NULL, 10, &Task_C0_2s_handle, 0);
-  if (xReturned_Task_C0_2s != pdPASS) 
-  {
-    Serial.println("[setup][Failed to create Task_C0_2s]");
-  }
-  else
-  {
-    Serial.println("[setup][Created Task_C0_2s]");
-  }
-
-  /* Task_C0_100ms */
-  xReturned_Task_C0_100ms = xTaskCreatePinnedToCore(&Task_C0_100ms, "Task_C0_100ms", MAJOR_TASK_SIZE_BYTES, NULL, 20, &Task_C0_100ms_handle, 0);
-  if (xReturned_Task_C0_100ms != pdPASS) 
-  {
-    Serial.println("[setup][Failed to create Task_C0_100ms]");
-  }
-  else
-  {
-    Serial.println("[setup][Created Task_C0_100ms]");
-  }
-
-  /* Task_C1_Init */
-  xReturned_Task_C1_Init = xTaskCreatePinnedToCore(&Task_C1_Init, "Task_C1_Init", MINOR_TASK_SIZE_BYTES, NULL, 23, &Task_C1_Init_handle, 1);
-  if (xReturned_Task_C1_Init != pdPASS) 
-  {
-    Serial.println("[setup][Failed to create Task_C1_Init]");
-  }
-  else
-  {
-    Serial.println("[setup][Created Task_C1_Init]");
-  }
-
-  /* Task_C1_10s */
-  xReturned_Task_C1_10s =  xTaskCreatePinnedToCore(&Task_C1_10s, "Task_C1_10s", MAJOR_TASK_SIZE_BYTES, NULL, 9, &Task_C1_10s_handle, 1);
-  if (xReturned_Task_C1_10s != pdPASS) 
-  {
-    Serial.println("[setup][Failed to create Task_C1_10s]");
-  }
-  else
-  {
-    Serial.println("[setup][Created Task_C1_10s]");
-  }
-
+    /* Init OS */
+    OS_InitOS();
 }
 
 void loop()
 {
-  /* "Debugger" service */
-  DebugPrint(&sensorData, &volumeSettings);
-  Serial.print("[Loop]");
-  vTaskDelay(250 / portTICK_PERIOD_MS);
+    /* "Debugger" service */
+    DebugPrint(&sensorData, &volumeSettings);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
 }
 
 /* End of Arduino Core Functions 
@@ -560,25 +557,33 @@ void loop()
 ************************************************************************************/
 INIT_STATUS Port_Init()
 {
-  /* Red LED */
-  pinMode(RED_LED_PIN_OUT_32, OUTPUT);
-  /* Green LED */
-  pinMode(GREEN_LED_PIN_OUT_26, OUTPUT);
-  /* Set buzzer pin to PWM output using internal PWM esp module*/
-  pinMode(BUZZER_PIN_OUT_33, OUTPUT);
-  // ledcSetup(LEDC_CHANNEL, BUZZER_FREQ, LEDC_TIMER_RESOLUTION);
-  // ledcAttachPin(BUZZER_PIN_OUT_33, LEDC_CHANNEL);
-  /*-----------------------------------------------------------*/
-  /* Potentiometer */
-  pinMode(POTENTIOMETER_PIN_IN_34, INPUT_PULLUP);
-  /* DHT pin digital input */
-  pinMode(DHT_22_SDA_PIN_IN_25, INPUT_PULLUP);
-  /* MQ2 Adc pin analog input*/
-  pinMode(MQ_2_AO_PIN_IN_ADC_35, INPUT_PULLUP);
+    #if DEBUG_INIT
+        Serial.println("[SW_Setup][Port_Init] Port_Initialisation ...");
+    #endif
 
-  vTaskDelay(10 / portTICK_PERIOD_MS);
+    /* Red LED */
+    pinMode(RED_LED_PIN_OUT_32, OUTPUT);
+    /* Green LED */
+    pinMode(GREEN_LED_PIN_OUT_26, OUTPUT);
+    /* Set buzzer pin to PWM output using internal PWM esp module*/
+    pinMode(BUZZER_PIN_OUT_33, OUTPUT);
+    // ledcSetup(LEDC_CHANNEL, BUZZER_FREQ, LEDC_TIMER_RESOLUTION);
+    // ledcAttachPin(BUZZER_PIN_OUT_33, LEDC_CHANNEL);
+    /*-----------------------------------------------------------*/
+    /* Potentiometer */
+    pinMode(POTENTIOMETER_PIN_IN_34, INPUT_PULLUP);
+    /* DHT pin digital input */
+    pinMode(DHT_22_SDA_PIN_IN_25, INPUT_PULLUP);
+    /* MQ2 Adc pin analog input*/
+    pinMode(MQ_2_AO_PIN_IN_ADC_35, INPUT_PULLUP);
 
-  return INIT_OK;
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+
+    #if DEBUG_INIT
+        Serial.println("[SW_Setup][Port_Init] Port_Initialisation done!");
+    #endif
+
+    return INIT_OK;
 }
 
 /********************************** Adc_Init ****************************************
@@ -588,26 +593,30 @@ INIT_STATUS Port_Init()
 ************************************************************************************/
 INIT_STATUS Adc_Init(uint8_t sensorPin, uint8_t adcResolution, uint8_t adcAttenuation)
 {
-  // pinMode(sensorPin, INPUT);
+    #if DEBUG_INIT
+        Serial.println("[SW_Setup][Adc_Init] ADC calibration ...");
+    #endif
 
-  /* Set the ADC resolution to 12 bits */
-  analogReadResolution(adcResolution);
+    // pinMode(sensorPin, INPUT);
 
-  /* Set the ADC attenuation  for the LM35 sensor pin
-    * ADC_0db:   ~~> 1.1V
-    * ADC_2_5db: ~~> 1.5V
-    * ADC_6db:   ~~> 2.2V
-    * ADC_11db:  ~~> 3.3V 
-    * {!!!} use static cast for adcAttenuation beacuse the func expects elements from adc_attenuation_t enum 
-    */
-  analogSetPinAttenuation(sensorPin, static_cast<adc_attenuation_t>(adcAttenuation));
+    /* Set the ADC resolution to 12 bits */
+    analogReadResolution(adcResolution);
 
-#if DEBUG_INIT
-  Serial.println("ADC calibrated");
-#endif
+    /* Set the ADC attenuation  for the LM35 sensor pin
+      * ADC_0db:   ~~> 1.1V
+      * ADC_2_5db: ~~> 1.5V
+      * ADC_6db:   ~~> 2.2V
+      * ADC_11db:  ~~> 3.3V 
+      * {!!!} use static cast for adcAttenuation beacuse the func expects elements from adc_attenuation_t enum 
+      */
+    analogSetPinAttenuation(sensorPin, static_cast<adc_attenuation_t>(adcAttenuation));
 
-  vTaskDelay(10 / portTICK_PERIOD_MS);
-  return INIT_OK;
+    #if DEBUG_INIT
+        Serial.println("[SW_Setup][Adc_Init] ADC calibrated !");
+    #endif
+
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+    return INIT_OK;
 }
 
 /********************************** I2C_Init ****************************************
@@ -617,46 +626,52 @@ INIT_STATUS Adc_Init(uint8_t sensorPin, uint8_t adcResolution, uint8_t adcAttenu
 ************************************************************************************/
 INIT_STATUS I2C_Init(uint8_t sda_pin, uint8_t scl_pin, uint32_t clk_spd)
 {
-  /* Init I2C */
-  Wire.begin(sda_pin, scl_pin);
+    #if DEBUG_INIT
+        Serial.println("[SW_Setup][I2C_Init] I2c Init ...");
+    #endif
 
-  /* Set clock speed to 100 MHz */
-  Wire.setClock(clk_spd);
+    /* Init I2C */
+    Wire.begin(sda_pin, scl_pin);
+
+    /* Set clock speed to 100 MHz */
+    // Wire.setClock(clk_spd);
  
-  /* I2C scanning */
-  byte error, address;
-  uint8_t nDevices = 0;
+    /* I2C scanning */
+    byte error, address;
+    uint8_t nDevices = 0;
 
-  for (address = 1; address < 127; address++)
-  {
-    Wire.beginTransmission(address);
-    error = Wire.endTransmission();
-
-    if (error == 0)
+    for (address = 1; address < 127; address++)
     {
+        Wire.beginTransmission(address);
+        error = Wire.endTransmission();
 
-#if DEBUG_INIT
-      Serial.print("I2C device found at address 0x");
-      Serial.println(address, HEX);
-#endif
+        if (error == 0)
+        {
 
-      nDevices++;
-      return INIT_OK;
+          #if DEBUG_INIT
+              Serial.print("[SW_Setup][I2C_Init] >>> I2C device found at address 0x");
+              Serial.println(address, HEX);
+          #endif
+
+          nDevices++;
+          return INIT_OK;
+        }
     }
-  }
 
-  if (nDevices == 0)
-  {
-
-#if DEBUG_INIT
-    Serial.println("No I2C devices found");
-#endif
-
-    return INIT_FAIL;
-  }
-
-  return INIT_OK;
-  
+    if (nDevices == 0)
+    {
+        #if DEBUG_INIT
+            Serial.println("[SW_Setup][I2C_Init] >>> No I2C devices found !");
+        #endif
+        return INIT_FAIL;
+            #if DEBUG_INIT
+        Serial.println("[SW_Setup][I2C_Init] I2c Init failed !");
+        #endif
+    }
+    #if DEBUG_INIT
+        Serial.println("[SW_Setup][I2C_Init] I2c Init done ! ");
+    #endif
+    return INIT_OK;
 }
 
 /********************************** LCD_Init ****************************************
@@ -668,80 +683,90 @@ INIT_STATUS I2C_Init(uint8_t sda_pin, uint8_t scl_pin, uint32_t clk_spd)
 INIT_STATUS LCD_Init(uint8_t lcd_addr, uint8_t lines, uint8_t rows, CustomCharsByte* charsByte, CustomChars* chars)
 {
 
-  /* Create LCD object using the pointer for LCD */
-  lcd_ptr = new LiquidCrystal_I2C(lcd_addr, lines, rows);
-  if (!lcd_ptr) 
-  {
-    Serial.println("Failed to allocate memory for LCD");
-    return INIT_FAIL;
-  }
+    /* Create LCD object using the pointer for LCD */
+    lcd_ptr = new LiquidCrystal_I2C(lcd_addr, lines, rows);
+    if (!lcd_ptr) 
+    {
+    #if DEBUG_INIT
+        Serial.println("[SW_Setup][LCD_Init]Failed to allocate memory for LCD !");
+    #endif
+      return INIT_FAIL;
+    }
 
-  /*----------------------------------------*/
-  /*
-   * Start LCD
-   */ 
-  lcd_ptr->init(); 
-  lcd_ptr->backlight();
-  lcd_ptr->clear();
+    /*----------------------------------------*/
+    /*
+    * Start LCD
+    */ 
+    lcd_ptr->init(); 
+    lcd_ptr->backlight();
+    lcd_ptr->clear();
 
-  /*----------------------------------------*/
-  /*
-   * Create custom chars
-   */ 
-  lcd_ptr->createChar(0, charsByte->thermometer);
-  chars->thermometer = 0;
-  lcd_ptr->createChar(1, charsByte->wifi);
-  chars->wifi = 1;
-  lcd_ptr->createChar(2, charsByte->humidity);
-  chars->humidity = 2;
-  lcd_ptr->createChar(3, charsByte->heart);
-  chars->heart = 3;
-  lcd_ptr->createChar(4, charsByte->smoke);
-  chars->smoke = 4;
-  lcd_ptr->createChar(5, charsByte->co);
-  chars->co = 5;
-  lcd_ptr->createChar(6, charsByte->lpg);
-  chars->lpg = 6;
-  lcd_ptr->createChar(7, charsByte->adc);
-  chars->adc = 7;
+    /*----------------------------------------*/
+    /*
+    * Create custom chars
+    */ 
+    lcd_ptr->createChar(0, charsByte->thermometer);
+    chars->thermometer = 0;
+    lcd_ptr->createChar(1, charsByte->wifi);
+    chars->wifi = 1;
+    lcd_ptr->createChar(2, charsByte->humidity);
+    chars->humidity = 2;
+    lcd_ptr->createChar(3, charsByte->heart);
+    chars->heart = 3;
+    lcd_ptr->createChar(4, charsByte->smoke);
+    chars->smoke = 4;
+    lcd_ptr->createChar(5, charsByte->co);
+    chars->co = 5;
+    lcd_ptr->createChar(6, charsByte->lpg);
+    chars->lpg = 6;
+    lcd_ptr->createChar(7, charsByte->adc);
+    chars->adc = 7;
 
-  /*----------------------------------------*/
-  /*
-   * Show loading screen
-   */    
-  lcd_ptr->setCursor(0, 0);     
-  lcd_ptr->print("Start MQ Warmpup");
-  lcd_ptr->setCursor(0, 1);   
-  for(uint8_t i = 0; i < 16; i++)
-  {
-    lcd_ptr->print(".");
-    vTaskDelay(2000 / portTICK_PERIOD_MS);
-  }
-  lcd_ptr->clear();
+    /*----------------------------------------*/
+    /*
+    * Show loading screen
+    */    
+    lcd_ptr->setCursor(0, 0);     
+    lcd_ptr->print("Start MQ Warmpup");
+    lcd_ptr->setCursor(0, 1);   
+    for(uint8_t i = 0; i < 16; i++)
+    {
+      lcd_ptr->print(".");
+      vTaskDelay(500 / portTICK_PERIOD_MS);
+    }
+    lcd_ptr->clear();
 
-  /*----------------------------------------*/
-  vTaskDelay(10 / portTICK_PERIOD_MS);
-  return INIT_OK; 
+    /*----------------------------------------*/
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+    #if DEBUG_INIT
+        Serial.println("[SW_Setup][LCD_Init] LCD setup done !");
+    #endif
+    return INIT_OK; 
 
 }
 
-/********************************** LCD_Init ****************************************
+/********************************** DHT_Init ****************************************
   Input:   uint8_t dht_pin, uint8_t dht_type
   Output:  INIT_STATUS
   Remarks: This function creates the DHT object using the pointe
 ************************************************************************************/
 INIT_STATUS Dht_Init(uint8_t dht_pin, uint8_t dht_type)
 {
-  /* Create DHT object using the pointer for DHT - DHT pin and DHT type: 11/22 */
-  dht_ptr = new DHT(dht_pin, dht_type);
-  if (!dht_ptr) 
-  {
-    Serial.println("Failed to allocate memory for DHT");
-    return INIT_FAIL;
-  }
-  dht_ptr->begin();
-  vTaskDelay(2000 / portTICK_PERIOD_MS);
-  return INIT_OK;
+    /* Create DHT object using the pointer for DHT - DHT pin and DHT type: 11/22 */
+    dht_ptr = new DHT(dht_pin, dht_type);
+    if (!dht_ptr) 
+    {
+    #if DEBUG_INIT
+        Serial.println("[SW_Setup][DHT_Init] Failed to allocate memory for DHT !");
+    #endif
+        return INIT_FAIL;
+      }
+      dht_ptr->begin();
+      vTaskDelay(2000 / portTICK_PERIOD_MS);
+    #if DEBUG_INIT
+        Serial.println("[SW_Setup][DHT_Init] DHT setup done !");
+    #endif
+    return INIT_OK;
 }
 
 /********************************* Wifi_Init ****************************************
@@ -751,9 +776,12 @@ INIT_STATUS Dht_Init(uint8_t dht_pin, uint8_t dht_type)
 ************************************************************************************/
 INIT_STATUS Wifi_Init()
 {
-  /* Init Wifi with Wifi callback */
-  Wifi_Callback(&Wifi_SetupNetworkConnection);
-  return INIT_OK;
+    /* Init Wifi with Wifi callback */
+    #if DEBUG_INIT
+        Serial.println("[SW_Setup][Wifi_Init] Wifi init ...");
+    #endif
+    Wifi_Callback(&Wifi_SetupNetworkConnection);
+    return INIT_OK;
 }
 
 /***************************** MQCalibration ****************************************
@@ -766,36 +794,37 @@ INIT_STATUS Wifi_Init()
 ************************************************************************************/ 
 INIT_STATUS MQCalibration(int mq_pin, SensorData* data)
 {
-  int i;
-  float val=0;
+    int i;
+    float val=0;
 
-  for (i=0;i<CALIBARAION_SAMPLE_TIMES;i++) 
-  {            
-    val += MQResistanceCalculation(analogRead(mq_pin));
-    delay(CALIBRATION_SAMPLE_INTERVAL);
-  }
+    for (i=0;i<CALIBARAION_SAMPLE_TIMES;i++) 
+    {            
+        val += MQResistanceCalculation(analogRead(mq_pin));
+        delay(CALIBRATION_SAMPLE_INTERVAL);
+    }
 
-  /* calculate the average value */
-  val = val/CALIBARAION_SAMPLE_TIMES;  
+    /* calculate the average value */
+    val = val/CALIBARAION_SAMPLE_TIMES;  
 
-  /* divided by RO_CLEAN_AIR_FACTOR yields the Ro */
-  val = val/RO_CLEAN_AIR_FACTOR;    
+    /* divided by RO_CLEAN_AIR_FACTOR yields the Ro */
+    val = val/RO_CLEAN_AIR_FACTOR;    
 
-  /* according to the chart in the datasheet */                                       
-  data->Ro = val;                                       
+    /* according to the chart in the datasheet */                                       
+    data->Ro = val;                                       
 
-  if(val)
-  {
-    return INIT_OK;
-  }
-  else
-  {
-    return INIT_FAIL;
-  }
+    if(val)
+    {
+        return INIT_OK;
+    }
+    else
+    {
+        return INIT_FAIL;
+    }
 }
 
 /* End of Init Functions 
  ******************************************************/
+
 
 /******************************************************
  * TASK IMPLEMENTATIONS */
@@ -808,49 +837,46 @@ INIT_STATUS MQCalibration(int mq_pin, SensorData* data)
 ************************************************************************************/
 void Task_C0_Init(void *pvParameters)
 {
-  /* Add task to watchdog timer */
-  esp_task_wdt_add(xTaskGetCurrentTaskHandle()); 
-  esp_task_wdt_delete(xTaskGetCurrentTaskHandle());
-  Serial.println("Task_C0_Init");
-  /* Reset watchdog timer */
-  esp_task_wdt_reset();
 
-  /* init flag */
-  bool init_done = false;
-  vTaskDelay(1000 / portTICK_PERIOD_MS);
-  /* Port Init */
-  // Port_Init();
+    /* Task sub-routines*/
 
-  /* Adc Init */
-  // Adc_Init(MQ_2_AO_PIN_IN_ADC_35, 12, ADC_11db);
+    /* Port Init */
+    Port_Init();
 
-  /* I2C Init */
-  // I2C_Init(I2C_SDA_PIN_21, I2C_SCL_PIN_22, 100000);
+    /* Adc Init */
+    Adc_Init(MQ_2_AO_PIN_IN_ADC_35, 12, ADC_11db);
 
-  /* LCD Init */
-  // LCD_Init(LCD_ADDR, LCD_COLUMNS, LCD_ROWS, &customCharsByte, &customChars);
+    /* I2C Init */
+    I2C_Init(I2C_SDA_PIN_21, I2C_SCL_PIN_22, 100000);
 
-  /* MQ  Init */
-  // MQCalibration(MQ_2_AO_PIN_IN_ADC_35, &sensorData);
+    /* LCD Init */
+    LCD_Init(LCD_ADDR, LCD_COLUMNS, LCD_ROWS, &customCharsByte, &customChars);
 
-  /* DHT Init */
-  // Dht_Init(DHT_PIN, DHT_TYPE);
+    /* MQ  Init */
+    MQCalibration(MQ_2_AO_PIN_IN_ADC_35, &sensorData);
 
-  init_done = true;
+    /* DHT Init */
+    Dht_Init(DHT_PIN, DHT_TYPE);
 
-#if DEBUG_INIT
-  Serial.println("Calculated Ro:" + String(sensorData.Ro));
-#endif
+    #if DEBUG_INIT
+        Serial.println("Calculated Ro:" + String(sensorData.Ro));
+    #endif
 
-  if(init_done)
+  /* Init flag */
+  init_flag_C0 = true;
+
+  /* After Init suspend task and release semaphore for Core 0 tasks */
+  if(init_flag_C0)
   {
     if(xInitSemaphore_C0)
-  {    
-    xSemaphoreGive(xInitSemaphore_C0);
-    xSemaphoreGive(xInitSemaphore_C0);
-  }
+    {    
+      xSemaphoreGive(xInitSemaphore_C0);
+      xSemaphoreGive(xInitSemaphore_C0);
+    }
+
     vTaskSuspend(NULL);
   }
+
 }
 
 /********************************* Task_C0_2s ***************************************
@@ -861,47 +887,45 @@ void Task_C0_Init(void *pvParameters)
 ************************************************************************************/
 void Task_C0_2s(void *pvParameters)
 {
-  if (xSemaphoreTake(xInitSemaphore_C0, portMAX_DELAY) == pdTRUE) 
-  {
-    /* Add task to watchdog timer */
-    esp_task_wdt_add(xTaskGetCurrentTaskHandle()); 
-    esp_task_wdt_delete(xTaskGetCurrentTaskHandle());
-
-    for (;;)
+    if (xSemaphoreTake(xInitSemaphore_C0, portMAX_DELAY) == pdTRUE) 
     {
-      
-       Serial.println("Task_C0_2s");
-      /* Reset watchdog timer */
-      esp_task_wdt_reset();
+        for (;;)
+        {
+          
+            /* Task counter */
+            portENTER_CRITICAL(&myMutex);
+            cnt_2s_C0 += 1;
+            portEXIT_CRITICAL(&myMutex);
 
-      // float _Ro = sensorData.Ro;
+            float _Ro = sensorData.Ro;
 
-#if DEBUG_DATA
-      Serial.println("*Ro: " + String(_Ro));
-#endif
+            #if DEBUG_DATA
+                  Serial.println("*Ro: " + String(_Ro));
+            #endif
 
-      /* Sub-routines */
+            /* Task sub-routines*/
 
-      // /* MQ 2 measurements */
-      // MQGetGasPercentage(MQRead(MQ_2_AO_PIN_IN_ADC_35) / _Ro, GAS_LPG, &sensorData);
-      // MQGetGasPercentage(MQRead(MQ_2_AO_PIN_IN_ADC_35) / _Ro, GAS_CO, &sensorData);
-      // MQGetGasPercentage(MQRead(MQ_2_AO_PIN_IN_ADC_35) / _Ro, GAS_SMOKE, &sensorData);
-      // MQGetVoltage(analogRead(MQ_2_AO_PIN_IN_ADC_35), &sensorData);
+            /* MQ 2 measurements */
+            MQGetGasPercentage(MQRead(MQ_2_AO_PIN_IN_ADC_35) / _Ro, GAS_LPG, &sensorData);
+            MQGetGasPercentage(MQRead(MQ_2_AO_PIN_IN_ADC_35) / _Ro, GAS_CO, &sensorData);
+            MQGetGasPercentage(MQRead(MQ_2_AO_PIN_IN_ADC_35) / _Ro, GAS_SMOKE, &sensorData);
+            MQGetVoltage(analogRead(MQ_2_AO_PIN_IN_ADC_35), &sensorData);
 
-      // /* DHT measurements */
-      // DHT_Measurement(&sensorData);
+            /* DHT measurements */
+            DHT_Measurement(&sensorData);
 
-      /* Task counter */
-      portENTER_CRITICAL(&myMutex);
-      cnt_2s_C0 += 1;
-      portEXIT_CRITICAL(&myMutex);
+            /* LCD function */
+            LcdDisplayData(&sensorData, &customChars);
 
-      /* LCD function */
-      LcdDisplayData(&sensorData, &customChars);
+            /* End of task sub-routines*/
 
-      vTaskDelay(TASK_PERIOD_2S / portTICK_PERIOD_MS);
+            /* To reset WST */
+            yield();
+
+            /* Task period */
+            vTaskDelay(TASK_PERIOD_2S / portTICK_PERIOD_MS);
+        }
     }
-  }
 }
 
 
@@ -913,33 +937,32 @@ void Task_C0_2s(void *pvParameters)
 ************************************************************************************/
 void Task_C0_100ms(void *pvParameters)
 {
-  if (xSemaphoreTake(xInitSemaphore_C0, portMAX_DELAY) == pdTRUE) 
-  {
-    /* Add task to watchdog timer */
-    esp_task_wdt_add(xTaskGetCurrentTaskHandle()); 
-    esp_task_wdt_delete(xTaskGetCurrentTaskHandle());
-
-    for (;;)
+    if (xSemaphoreTake(xInitSemaphore_C0, portMAX_DELAY) == pdTRUE) 
     {
-      /* Reset watchdog timer */
-      esp_task_wdt_reset();
+        for (;;)
+        {
 
+          /* Task counter */
+          portENTER_CRITICAL(&myMutex);
+          cnt_100ms_C0 += 1;
+          portEXIT_CRITICAL(&myMutex);
 
-      Serial.println("Task_C0_100ms");
+          /* Task sub-routines*/
 
-      // ManageBuzzerVolume(&volumeSettings, POTENTIOMETER_PIN_IN_34);
+          // ManageBuzzerVolume(&volumeSettings, POTENTIOMETER_PIN_IN_34);
 
-      // /* LimitAlertCheck (alarm and led signals) */
-      // LimitAlertCheck(&sensorData, &volumeSettings);
+          /* LimitAlertCheck (alarm and led signals) */
+          LimitAlertCheck(&sensorData, &volumeSettings);
 
-      /* Task counter */
-      portENTER_CRITICAL(&myMutex);
-      cnt_100ms_C0 += 1;
-      portEXIT_CRITICAL(&myMutex);
+          /* End of task sub-routines*/
 
-      vTaskDelay(TASK_PERIOD_100MS / portTICK_PERIOD_MS);
+          /* To reset WST */
+          yield();
+
+          /* Task period */
+          vTaskDelay(TASK_PERIOD_100MS / portTICK_PERIOD_MS);
+        }
     }
-  }
 }
 
 /******************************* Task_C1_Init ***************************************
@@ -950,26 +973,33 @@ void Task_C0_100ms(void *pvParameters)
 ************************************************************************************/
 void Task_C1_Init(void *pvParameters)
 {
-  /* Add task to watchdog timer */
-  esp_task_wdt_add(xTaskGetCurrentTaskHandle()); 
-  esp_task_wdt_delete(xTaskGetCurrentTaskHandle());
-  /* Reset watchdog timer */
-  // esp_task_wdt_reset();
-  Serial.println("Task_C1_Init");
 
-  bool init_done = false;
+    /* Task sub-routines*/
 
-  Wifi_Init();
+    /* Init WiFi connection */
+    INIT_STATUS wifi_status = Wifi_Init();
+    if (wifi_status == INIT_OK) 
+    {
+        init_flag_C1 = true;
+    }
 
-  init_done = true;
+    /* End of task sub-routines*/
 
+    if (!init_flag_C1)
+    {
+        Serial.println("[WiFi Init] Not done in setup(). Suspending.");
+        vTaskSuspend(NULL);
+    }
 
-  if(init_done)
-  {
-    xSemaphoreGive(xInitSemaphore_C1);
+    if (init_flag_C1)
+    {   
+        if (xInitSemaphore_C1)
+        {
+            xSemaphoreGive(xInitSemaphore_C1);
+        }
 
-    vTaskSuspend(NULL);
-  }
+        vTaskSuspend(NULL);
+    }
 
 }
 
@@ -983,30 +1013,78 @@ void Task_C1_Init(void *pvParameters)
 ************************************************************************************/
 void Task_C1_10s(void *pvParameters)
 {
-  if (xSemaphoreTake(xInitSemaphore_C1, portMAX_DELAY) == pdTRUE) 
-  {
-    /* Add task to watchdog timer */
-    // esp_task_wdt_add(xTaskGetCurrentTaskHandle()); 
-    esp_task_wdt_delete(xTaskGetCurrentTaskHandle());
+    if (xSemaphoreTake(xInitSemaphore_C1, portMAX_DELAY) == pdTRUE) 
+    {
+        for (;;)
+        {
+          
+          /* Task counter */
+          portENTER_CRITICAL(&myMutex);
+          cnt_10s_C1 += 1;
+          portEXIT_CRITICAL(&myMutex);
+
+          /* Task sub-routines*/
+
+          Wifi_SendDataToGoogleSpreadsheets(&sensorData); 
+
+          /* End of task sub-routines*/
+
+          /* To reset WST */
+          yield();
+
+          /* Task period */
+          vTaskDelay(TASK_PERIOD_10S / portTICK_PERIOD_MS);
+        }
+    }
+}
+
+/******************************* Task_AsyncEvents_C1 ******************************
+  Input:   void *pvParameters
+  Output:  None
+  Remarks: Task_AsyncEvents_C1, calls sub-routines for Core 1 aka Wifi_SendDataToGoogleSpreadsheets
+           If the Queue is updates the task is notified and becomes active
+           It will not send data until Task_C0_2s is running, in order to send valid data 
+           to the cloud service.
+************************************************************************************/
+void Task_AsyncEvents_C1(void *pvParameters)
+{
+    SensorData receivedData;
+    TickType_t lastSendTime = 0;
 
     for (;;)
     {
-      /* Reset watchdog timer */
-      // esp_task_wdt_reset();
-      Serial.println("Task_C1_10s");
+        if (xQueueReceive(xUploadQueue, &receivedData, portMAX_DELAY) == pdTRUE)
+        {
+            /* Task counter */
+            portENTER_CRITICAL(&myMutex);
+            cnt_AsyncEvents_C1 += 1;
+            portEXIT_CRITICAL(&myMutex);
 
+            /* Task sub-routines*/
 
-      // Wifi_SendDataToGoogleSpreadsheets(&sensorData);
+            /* Set e delay between sending data */
+            TickType_t now = xTaskGetTickCount();
+            /* At least 5 seconds between sending dataframes */
+            if (now - lastSendTime >= pdMS_TO_TICKS(5000)) 
+            {   
+                /* Send data only if data from sensors is available */
+                if(cnt_2s_C0 > 0)
+                {
+                    Wifi_SendDataToGoogleSpreadsheets(&receivedData);
+                    lastSendTime = now;
+                }
 
-      /* Task counter */
-      portENTER_CRITICAL(&myMutex);
-      cnt_10s_C1 += 1;
-      portEXIT_CRITICAL(&myMutex);
+            }
 
-      vTaskDelay(TASK_PERIOD_10S / portTICK_PERIOD_MS);
+            /* End of task sub-routines*/
+
+        }
+        
+        /* To reset WDT */
+        yield(); 
     }
-  }
 }
+
 
 /* End of Task Functions 
  ******************************************************/
@@ -1024,7 +1102,7 @@ void Task_C1_10s(void *pvParameters)
 ************************************************************************************/ 
 float MQResistanceCalculation(int raw_adc)
 {
-  return ( ((float)RL_VALUE*(ADC_MAX_RESOLUTION-raw_adc)/raw_adc));
+    return ( ((float)RL_VALUE*(ADC_MAX_RESOLUTION-raw_adc)/raw_adc));
 }
  
 /*****************************  MQRead *********************************************
@@ -1037,19 +1115,19 @@ float MQResistanceCalculation(int raw_adc)
 ************************************************************************************/ 
 float MQRead(int mq_pin)
 {
-  int i;
-  float rs=0;
+    int i;
+    float rs=0;
+    
+    /* reading with oversampling */
+    for (i=0;i<READ_SAMPLE_TIMES;i++) 
+    {
+        rs += MQResistanceCalculation(analogRead(mq_pin));
+        delay(READ_SAMPLE_INTERVAL);
+    }
   
-  /* reading with oversampling */
-  for (i=0;i<READ_SAMPLE_TIMES;i++) 
-  {
-    rs += MQResistanceCalculation(analogRead(mq_pin));
-    delay(READ_SAMPLE_INTERVAL);
-  }
- 
-  rs = rs/READ_SAMPLE_TIMES;
- 
-  return rs;  
+    rs = rs/READ_SAMPLE_TIMES;
+  
+    return rs;  
 }
  
 /*****************************  MQGetGasPercentage **********************************
@@ -1061,42 +1139,42 @@ float MQRead(int mq_pin)
 ************************************************************************************/ 
 void MQGetGasPercentage(float rs_ro_ratio, int gas_id, SensorData* data)
 {
-  if ( gas_id == GAS_LPG ) 
-  {
-    long gasPercentage = MQGetPercentage(rs_ro_ratio,LPGCurve);
-    if(gasPercentage)
+    if ( gas_id == GAS_LPG ) 
     {
-      data->iPPM_LPG = gasPercentage;
-    }
-    else
+        long gasPercentage = MQGetPercentage(rs_ro_ratio,LPGCurve);
+        if(gasPercentage)
+        {
+            data->iPPM_LPG = gasPercentage;
+        }
+        else
+        {
+            data->iPPM_LPG = 0;
+        }
+    } 
+    else if ( gas_id == GAS_CO ) 
     {
-      data->iPPM_LPG = 0;
-    }
-  } 
-  else if ( gas_id == GAS_CO ) 
-  {
-    long gasPercentage = MQGetPercentage(rs_ro_ratio,COCurve);
-    if(gasPercentage)
+        long gasPercentage = MQGetPercentage(rs_ro_ratio,COCurve);
+        if(gasPercentage)
+        {
+            data->iPPM_CO = gasPercentage;
+        }
+        else
+        {
+            data->iPPM_CO = 0;
+        }
+    } 
+    else if ( gas_id == GAS_SMOKE ) 
     {
-      data->iPPM_CO = gasPercentage;
-    }
-    else
-    {
-      data->iPPM_CO = 0;
-    }
-  } 
-  else if ( gas_id == GAS_SMOKE ) 
-  {
-    long gasPercentage = MQGetPercentage(rs_ro_ratio,SmokeCurve);
-    if(gasPercentage)
-    {
-      data->iPPM_Smoke = gasPercentage;
-    }
-    else
-    {
-      data->iPPM_Smoke = 0;
-    }
-  }    
+        long gasPercentage = MQGetPercentage(rs_ro_ratio,SmokeCurve);
+        if(gasPercentage)
+        {
+            data->iPPM_Smoke = gasPercentage;
+        }
+        else
+        {
+            data->iPPM_Smoke = 0;
+        }
+    }    
 
 }
  
@@ -1111,7 +1189,7 @@ void MQGetGasPercentage(float rs_ro_ratio, int gas_id, SensorData* data)
 ************************************************************************************/ 
 long  MQGetPercentage(float rs_ro_ratio, float *pcurve)
 {
-  return (pow(10,( ((log(rs_ro_ratio)-pcurve[1])/pcurve[2]) + pcurve[0])));
+    return (pow(10,( ((log(rs_ro_ratio)-pcurve[1])/pcurve[2]) + pcurve[0])));
 }
 
 /********************************  MQGetVoltage *************************************
@@ -1122,9 +1200,9 @@ long  MQGetPercentage(float rs_ro_ratio, float *pcurve)
 ************************************************************************************/ 
 void MQGetVoltage(uint32_t adc_raw_value, SensorData* data)
 {
-  float voltage = (adc_raw_value / ADC_MAX_RESOLUTION) * 3.3;
-  data->adcMq2Voltage = voltage;
-  data->adcRawValue = adc_raw_value;
+    float voltage = (adc_raw_value / ADC_MAX_RESOLUTION) * 3.3;
+    data->adcMq2Voltage = voltage;
+    data->adcRawValue = adc_raw_value;
 
 }
 
@@ -1144,9 +1222,9 @@ void MQGetVoltage(uint32_t adc_raw_value, SensorData* data)
 ************************************************************************************/ 
 void DHT_Measurement(SensorData* data)
 {
-  DHT_Callback(&DHT_ReadTemperature_Callback, data);
-  DHT_Callback(&DHT_ReadHumidity_Callback, data);
-  DHT_Callback(&DHT_ComputeHeatIndex_Callback, data);
+    DHT_Callback(&DHT_ReadTemperature_Callback, data);
+    DHT_Callback(&DHT_ReadHumidity_Callback, data);
+    DHT_Callback(&DHT_ComputeHeatIndex_Callback, data);
 }
 
 /*
@@ -1154,10 +1232,10 @@ void DHT_Measurement(SensorData* data)
  */
 void DHT_Callback(void (*fptr)(SensorData* data), SensorData* data) 
 {
-  if (fptr) 
-  {
-    fptr(data);
-  }
+    if (fptr) 
+    {
+        fptr(data);
+    }
 }
 
 /*
@@ -1166,11 +1244,11 @@ void DHT_Callback(void (*fptr)(SensorData* data), SensorData* data)
  */
 void DHT_ReadTemperature_Callback(SensorData* data) 
 {
-  float temperature = dht_ptr->readTemperature(false);
-  if (!isnan(temperature)) 
-  {
-    data->temperature = temperature;
-  }
+    float temperature = dht_ptr->readTemperature(false);
+    if (!isnan(temperature)) 
+    {
+        data->temperature = temperature;
+    }
 }
 
 /*
@@ -1179,11 +1257,11 @@ void DHT_ReadTemperature_Callback(SensorData* data)
  */
 void DHT_ReadHumidity_Callback(SensorData* data) 
 {
-  float humidity = dht_ptr->readHumidity();
-  if (!isnan(humidity)) 
-  {
-    data->humidity = humidity;
-  }
+    float humidity = dht_ptr->readHumidity();
+    if (!isnan(humidity)) 
+    {
+        data->humidity = humidity;
+    }
 }
 
 /*
@@ -1192,11 +1270,11 @@ void DHT_ReadHumidity_Callback(SensorData* data)
  */
 void DHT_ComputeHeatIndex_Callback(SensorData* data) 
 {
-  float heatIndex = dht_ptr->computeHeatIndex(data->temperature, data->humidity, false);
-  if (!isnan(heatIndex)) 
-  {
-    data->heatIndex = heatIndex;
-  }
+    float heatIndex = dht_ptr->computeHeatIndex(data->temperature, data->humidity, false);
+    if (!isnan(heatIndex)) 
+    {
+        data->heatIndex = heatIndex;
+    }
 }
 
 /* End of DHT Functions 
@@ -1213,7 +1291,10 @@ void DHT_ComputeHeatIndex_Callback(SensorData* data)
 ************************************************************************************/ 
 void DebugPrint(SensorData* data, VolumeSettings* settings)
 {
-#if DEGUG_DATA
+
+  Serial.print("[Time: "); Serial.print(millis()); Serial.println("ms] ");
+
+  #if DEGUG_DATA
     Serial.print("* Adc_Raw: " + String(data->adcRawValue));
     Serial.print(" Vin: " + String(data->adcMq2Voltage));
     Serial.println(" Ro:" + String(data->Ro) + " kOhm");
@@ -1227,15 +1308,21 @@ void DebugPrint(SensorData* data, VolumeSettings* settings)
     Serial.println(" Heat Index: " + String(data->heatIndex));
 
     Serial.println();
-#endif
-#if DEGUG_COUNTER
-    Serial.print("* cnt_100ms_C0: " + String(cnt_100ms_C0));
-    Serial.print(" cnt_2s_C0:" + String(cnt_2s_C0));
-    Serial.println(" cnt_10s_C1:" + String(cnt_10s_C1));
-#endif
-#if DEBUG_POT_PWM
-    Serial.println("Potentiometer DBG: " + String(settings->potValue) + " -> Duty Cycle: " + String(settings->dutyCycle));
-#endif
+  #endif
+
+  #if DEGUG_COUNTER
+      Serial.print("[Task_C0_Init][stat:");Serial.print(init_flag_C1);Serial.print("]");Serial.print("_|_");
+      Serial.print("[Task_C0_2s][cnt:");Serial.print(cnt_2s_C0);Serial.print("]");Serial.print("_|_");
+      Serial.print("[Task_C0_100ms][cnt:");Serial.print(cnt_100ms_C0);Serial.print("]");Serial.print("_|_");
+      Serial.print("[Task_C1_Init][stat:");Serial.print(init_flag_C1);Serial.print("]");Serial.print("_|_");
+      Serial.print("[Task_C1_10s][cnt:");Serial.print(cnt_10s_C1);Serial.print("]");Serial.print("_|_");
+      Serial.print("[Task_AsyncEvents_C1][cnt:");Serial.print(cnt_AsyncEvents_C1);Serial.print("]");Serial.println();
+  #endif
+
+  #if DEBUG_POT_PWM
+      Serial.println("Potentiometer DBG: " + String(settings->potValue) + " -> Duty Cycle: " + String(settings->dutyCycle));
+  #endif
+
 }
 
 /****************************  LimitAlertCheck *************************************
@@ -1245,30 +1332,35 @@ void DebugPrint(SensorData* data, VolumeSettings* settings)
 ************************************************************************************/ 
 void LimitAlertCheck(SensorData* data, VolumeSettings* settings)
 {
-  long iPPM_LPG = data->iPPM_LPG;
-  long iPPM_CO = data->iPPM_CO ;
-  long iPPM_Smoke = data->iPPM_Smoke;
+    long iPPM_LPG = data->iPPM_LPG;
+    long iPPM_CO = data->iPPM_CO ;
+    long iPPM_Smoke = data->iPPM_Smoke;
 
-  /* Check gas percenatge and set alarm and led accordingly */
-  if(iPPM_LPG < GAS_LPG_ALARM_LIMIT && iPPM_CO < GAS_CO_ALARM_LIMIT &&  iPPM_Smoke < GAS_SMOKE_ALARM_LIMIT)
-  {
-    digitalWrite(GREEN_LED_PIN_OUT_26, HIGH);
-    digitalWrite(RED_LED_PIN_OUT_32, LOW);
-    noTone(BUZZER_PIN_OUT_33);
-    // ledcWrite(LEDC_CHANNEL, 0);
-  }
-  else
-  {
-    digitalWrite(GREEN_LED_PIN_OUT_26, LOW);
-    digitalWrite(RED_LED_PIN_OUT_32, HIGH);
-    tone(BUZZER_PIN_OUT_33, 500);
+    /* Check gas percenatge and set alarm and led accordingly */
+    if(iPPM_LPG > GAS_LPG_ALARM_LIMIT || iPPM_CO > GAS_CO_ALARM_LIMIT ||  iPPM_Smoke > GAS_SMOKE_ALARM_LIMIT)
+    {
+        digitalWrite(GREEN_LED_PIN_OUT_26, LOW);
+        digitalWrite(RED_LED_PIN_OUT_32, HIGH);
+        
+        /* Non blocking update send data to the queue */
+        SensorData alertData = *data;
+        xQueueSendToBack(xUploadQueue, &alertData, 0);
 
-#if DEBUG_POT_PWM
-    Serial.println("Potentiometer T100ms: " + String(settings->potValue) + " -> Duty Cycle: " + String(settings->dutyCycle));
-#endif
+        // tone(BUZZER_PIN_OUT_33, 500);
 
-    // ledcWrite(LEDC_CHANNEL, settings->dutyCycle);
-  }
+        // ledcWrite(LEDC_CHANNEL, settings->dutyCycle);
+    }
+    else
+    {
+        digitalWrite(GREEN_LED_PIN_OUT_26, HIGH);
+        digitalWrite(RED_LED_PIN_OUT_32, LOW);
+        // noTone(BUZZER_PIN_OUT_33);
+        // ledcWrite(LEDC_CHANNEL, 0);
+    }
+
+    #if DEBUG_POT_PWM
+        Serial.println("Potentiometer T100ms: " + String(settings->potValue) + " -> Duty Cycle: " + String(settings->dutyCycle));
+    #endif
 
 }
 
@@ -1279,10 +1371,10 @@ void LimitAlertCheck(SensorData* data, VolumeSettings* settings)
 ************************************************************************************/ 
 void ManageBuzzerVolume(VolumeSettings* settings, uint8_t pot_pin)
 {
-  uint16_t potValue = analogRead(pot_pin);
-  settings->potValue = potValue;
-  uint8_t dutyCycle = map(settings->potValue, 0, 4095, 0, 255);
-  settings->dutyCycle = dutyCycle;
+    uint16_t potValue = analogRead(pot_pin);
+    settings->potValue = potValue;
+    uint8_t dutyCycle = map(settings->potValue, 0, 4095, 0, 255);
+    settings->dutyCycle = dutyCycle;
 }
 
 /* End of DEBUG and Safety Functions 
@@ -1301,80 +1393,77 @@ void ManageBuzzerVolume(VolumeSettings* settings, uint8_t pot_pin)
 ************************************************************************************/ 
 void LcdDisplayData(SensorData* data, CustomChars* chars)
 {
-  /* case selector */
-  uint8_t selector = cnt_2s_C0 % 2;
+    /* case selector */
+    uint8_t selector = cnt_2s_C0 % 2;
 
-  /* LCD cleanup */
-  lcd_ptr->clear();  
+    /* LCD cleanup */
+    lcd_ptr->clear();  
 
-  switch(selector)
-  {
-    case 0:
-      /*---Row_1---------------------*/
-      lcd_ptr->setCursor(0, 0);
-
-      lcd_ptr->write(byte(chars->thermometer));
-      lcd_ptr->print(":");
-      lcd_ptr->print((int)data->temperature);
-      
-      lcd_ptr->print(" ");
-
-      lcd_ptr->write(byte(chars->humidity));
-      lcd_ptr->print(":");
-      lcd_ptr->print((int)data->humidity);
-
-      lcd_ptr->print(" ");
-
-      lcd_ptr->write(byte(chars->heart));
-      lcd_ptr->print(":");
-      lcd_ptr->print((int)data->heatIndex);
-
-      /*---Row_2---------------------*/
-      lcd_ptr->setCursor(0, 1);
-
-      lcd_ptr->write(byte(chars->wifi));
-      lcd_ptr->print(":");
-      if(wifi_connected) lcd_ptr->print("ON");
-      if(!wifi_connected) lcd_ptr->print("OFF");
-
-      lcd_ptr->print("   ");
-
-      lcd_ptr->write(byte(chars->adc));
-      lcd_ptr->print(":");
-      lcd_ptr->print((int)data->adcRawValue);
-
-      vTaskDelay(25 / portTICK_PERIOD_MS);
-
-      break;
-
-    case 1:
-      /*---Row_1---------------------*/
-      lcd_ptr->setCursor(0, 0);
-      lcd_ptr->write(byte(chars->smoke));
-      lcd_ptr->print(":");
-      lcd_ptr->print((int)data->iPPM_Smoke);
-      lcd_ptr->print("ppm");
-
-      lcd_ptr->print(" ");
-
-      lcd_ptr->write(byte(chars->lpg));
-      lcd_ptr->print(":");
-      lcd_ptr->print((int)data->iPPM_LPG);
-      lcd_ptr->print("ppm");
-
-      /*---Row_2---------------------*/
-      lcd_ptr->setCursor(0, 1);
-
-      lcd_ptr->write(byte(chars->co));
-      lcd_ptr->print(":");
-      lcd_ptr->print((int)data->iPPM_CO);
-      lcd_ptr->print("ppm");
-
-      vTaskDelay(25 / portTICK_PERIOD_MS);
-
-      break;
-
-  }
+    switch(selector)
+    {
+        case 0:
+              /*---Row_1---------------------*/
+              lcd_ptr->setCursor(0, 0);
+              /*-----------------------------*/
+              lcd_ptr->write(byte(chars->thermometer));
+              lcd_ptr->print(":");
+              lcd_ptr->print((int)data->temperature);
+              /*-----------------------------*/
+              lcd_ptr->print(" ");
+              /*-----------------------------*/
+              lcd_ptr->write(byte(chars->humidity));
+              lcd_ptr->print(":");
+              lcd_ptr->print((int)data->humidity);
+              /*-----------------------------*/
+              lcd_ptr->print(" ");
+              /*-----------------------------*/
+              lcd_ptr->write(byte(chars->heart));
+              lcd_ptr->print(":");
+              lcd_ptr->print((int)data->heatIndex);
+              /*---Row_2---------------------*/
+              lcd_ptr->setCursor(0, 1);
+              /*-----------------------------*/
+              lcd_ptr->write(byte(chars->wifi));
+              lcd_ptr->print(":");
+              if(wifi_connected) lcd_ptr->print("ON");
+              if(!wifi_connected) lcd_ptr->print("OFF");
+              /*-----------------------------*/
+              lcd_ptr->print("   ");
+              /*-----------------------------*/
+              lcd_ptr->write(byte(chars->adc));
+              lcd_ptr->print(":");
+              lcd_ptr->print((int)data->adcRawValue);
+              /*-----------------------------*/
+              vTaskDelay(25 / portTICK_PERIOD_MS);
+              /*-----------------------------*/
+              break;
+        case 1:
+            /*---Row_1---------------------*/
+            lcd_ptr->setCursor(0, 0);
+            /*-----------------------------*/
+            lcd_ptr->write(byte(chars->smoke));
+            lcd_ptr->print(":");
+            lcd_ptr->print((int)data->iPPM_Smoke);
+            lcd_ptr->print("ppm");
+            /*-----------------------------*/
+            lcd_ptr->print(" ");
+            /*-----------------------------*/
+            lcd_ptr->write(byte(chars->lpg));
+            lcd_ptr->print(":");
+            lcd_ptr->print((int)data->iPPM_LPG);
+            lcd_ptr->print("ppm");
+            /*---Row_2---------------------*/
+            lcd_ptr->setCursor(0, 1);
+            /*-----------------------------*/
+            lcd_ptr->write(byte(chars->co));
+            lcd_ptr->print(":");
+            lcd_ptr->print((int)data->iPPM_CO);
+            lcd_ptr->print("ppm");
+            /*-----------------------------*/
+            vTaskDelay(25 / portTICK_PERIOD_MS);
+            /*-----------------------------*/
+            break;
+    }
 
 }
 
@@ -1388,55 +1477,127 @@ void LcdDisplayData(SensorData* data, CustomChars* chars)
 /*
  * Wifi_Callback - used to call wifi functions that exist or will be implemented in the future
  */
-void Wifi_Callback(void (*fptr)(void))
+bool Wifi_Callback(bool (*fptr)(void))
 {
-  if (fptr) 
-  {
-    fptr();
-  }
-
+    if (fptr) 
+    {
+        return fptr();
+    }
+    return false;
 }
 
 /****************************  Wifi_SetupNetworkConnection ***************************
   Input:   None
-  Output:  None
+  Output:  bool
   Remarks: This function attempts to connect to a wifi network
            If connection is succesful the wifi_connected flag is set true 
 ************************************************************************************/ 
-void Wifi_SetupNetworkConnection()
+bool Wifi_SetupNetworkConnection()
 {
-
-  int timeout = 0;
-  const int MAX_TIMEOUT = 20;
-
-#if DEBUG_HTTP
-  Serial.print("Connecting to WiFi");
-#endif
-  
-  /* Init connection to wifi network */
-  WiFi.begin("CDIDC", "SkodaOctavia2005");
-
-  while (WiFi.status() != WL_CONNECTED && timeout < MAX_TIMEOUT)
-  {
     wifi_connected = false;
-    delay(100);
-    timeout++;
+    int networks_found = 0;
 
-#if DEBUG_HTTP
-    Serial.print(".");
-#endif
+    pinMode(LED_BUILTIN, OUTPUT);
+    digitalWrite(LED_BUILTIN, LOW);
 
-  }
+    /* Init SPIFFS */ 
+    SPIFFS_Init();
 
-  if (WiFi.status() == WL_CONNECTED)
-  {
-    wifi_connected = true;
+    /* Open WIFI_CONFIG_FILE */
+    File file = SPIFFS_OpenFile(WIFI_CONFIG_FILE);
+    if (!file)
+    {
+        Serial.println("[WiFi] Could not open file: " WIFI_CONFIG_FILE);
+        return false;
+    }
 
-#if DEBUG_HTTP
-    Serial.println(" Connected!");
-#endif
+    /* Parse data from  WIFI_CONFIG_FILE */
+    while (file.available()) 
+    {
+        String line = file.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0 || line.indexOf(';') == -1) continue;
 
-  }
+        int sep = line.indexOf(';');
+        String ssid = line.substring(0, sep);
+        String password = line.substring(sep + 1);
+
+        /* Connect to Wifi networks from  WIFI_CONFIG_FILE */
+        Serial.printf("[WiFi] Trying connection to: %s\n", ssid.c_str());
+        WiFi.begin(ssid.c_str(), password.c_str());
+
+        /* Wait until connection is done */
+        Wifi_WaitForConnection();
+
+        /* Check connection status */
+        Wifi_CheckConnectionStatus(ssid.c_str());
+
+        /* If connection is successful break */
+        if (wifi_connected) break;
+
+    }
+
+    file.close();
+    if (!wifi_connected) 
+    {
+        Serial.println("[WiFi] Could not connect to a Wifi network !");
+    }
+
+    return wifi_connected;
+
+}
+
+/************************** Wifi_WaitForConnection *********************************
+  Input:   None
+  Output:  None
+  Remarks: This function sets up a delay until Wifi connection is done
+************************************************************************************/ 
+void Wifi_WaitForConnection()
+{
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_TIMEOUT_MS) 
+    {
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+        /* To reset WDT */
+        yield();
+        Serial.print(".");
+    }
+}
+
+/************************** Wifi_WaitForConnection *********************************
+  Input:   const char* ssid
+  Output:  None
+  Remarks: This function checks if connection is done and pings 
+************************************************************************************/ 
+void Wifi_CheckConnectionStatus(const char* ssid)
+{
+    if (WiFi.status() == WL_CONNECTED) 
+    {
+        wifi_connected = true;
+        Serial.printf("\n[WiFi] Connected to %s | IP: %s\n", ssid, WiFi.localIP().toString().c_str());
+        digitalWrite(LED_BUILTIN, HIGH);
+
+        /* Init Wifi client to test connection */
+        WiFiClient client;
+        Serial.println("[WiFi] Test connection to google.com...");
+        if (client.connect("google.com", 80)) 
+        {
+            Serial.println("[WiFi] Connection to google.com succsesful !");
+            client.stop();
+        } 
+        else 
+        {
+            Serial.println("[WiFi] Connection to google.com failed !");
+        }
+        return;
+
+    } 
+    else 
+    {
+        Serial.println("\n[WiFi] Could not connect to current network, try the next one !");
+        WiFi.disconnect(true);
+        vTaskDelay(500 / portTICK_PERIOD_MS);
+    }
 }
 
 /************************** Wifi_SendDataToGoogleSpreadsheets ***********************
@@ -1446,78 +1607,334 @@ void Wifi_SetupNetworkConnection()
 ************************************************************************************/ 
 void Wifi_SendDataToGoogleSpreadsheets(SensorData* data)
 {
-  /* Send data only if data from sensors is available */
-  if(cnt_2s_C0 > 0)
-  {
-    if (WiFi.status() == WL_CONNECTED)
+    /* Send data only if data from sensors is available */
+    if(cnt_2s_C0 > 0)
     {
-        HTTPClient http;
-
-        /* Build URL */
-        String url = googleScriptURL +
-                    "?temperature=" + String(data->temperature, 2) +
-                    "&humidity=" + String(data->humidity, 2) +
-                    "&heatIndex=" + String(data->heatIndex, 2) +
-                    "&adcMq2Voltage=" + String(data->adcMq2Voltage, 2) +
-                    "&Ro=" + String(data->Ro, 2) +
-                    "&iPPM_LPG=" + String(data->iPPM_LPG) +
-                    "&iPPM_CO=" + String(data->iPPM_CO) +
-                    "&iPPM_Smoke=" + String(data->iPPM_Smoke) +
-                    "&adcRawValue=" + String(data->adcRawValue);
-
-        /* Init GET Request */
-        http.begin(url);  
-        /* Send GET Request */               
-        int httpResponseCode = http.GET(); 
-
-        if (httpResponseCode > 0)
+        if (WiFi.status() == WL_CONNECTED)
         {
-            String response = http.getString();
+            HTTPClient http;
 
-#if DEBUG_HTTP
-            Serial.println("HTTP Response code: " + String(httpResponseCode));
-            Serial.println("Response: " + response);
-#endif
+            /* Build URL */
+            String url = googleScriptURL +
+                        "?temperature=" + String(data->temperature, 2) +
+                        "&humidity=" + String(data->humidity, 2) +
+                        "&heatIndex=" + String(data->heatIndex, 2) +
+                        "&adcMq2Voltage=" + String(data->adcMq2Voltage, 2) +
+                        "&Ro=" + String(data->Ro, 2) +
+                        "&iPPM_LPG=" + String(data->iPPM_LPG) +
+                        "&iPPM_CO=" + String(data->iPPM_CO) +
+                        "&iPPM_Smoke=" + String(data->iPPM_Smoke) +
+                        "&adcRawValue=" + String(data->adcRawValue);
 
+            /* Init GET Request */
+            if (WiFi.status() != WL_CONNECTED) 
+            {
+              Serial.println("[HTTPS] Not connected to WiFi.");
+              return;
+            }
+            http.begin(url);
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+             
+            /* To reset WDT */
+            yield(); 
+
+            /* Set timeout */  
+            http.setTimeout(5000);
+
+            /* Send GET Request */               
+            int httpResponseCode = http.GET(); 
+
+            if (httpResponseCode == 302) 
+            {
+                /* Get reddirect link to googleusercontent */
+                String redirectUrl = http.getLocation(); 
+                /* Close old connection */ 
+                http.end();  
+
+                Serial.println("[HTTPS] Redirected to: " + redirectUrl);
+
+                http.begin(redirectUrl);
+                httpResponseCode = http.GET();
+                /* To reset WDT */
+                yield(); 
+            }
+
+            if (httpResponseCode > 0)
+            {
+                String response = http.getString();
+                #if DEBUG_HTTP
+                    Serial.println("[HTTPS] HTTP Response code: " + String(httpResponseCode));
+                    Serial.println("[HTTPS] Response: " + response);
+                #endif
+            }
+            else
+            {
+                #if DEBUG_HTTP
+                    Serial.println("[HTTPS] Error on sending GET: " + String(httpResponseCode));
+                #endif
+            }
+             
+            /* To reset WDT */
+            yield(); 
+
+            /* Close connection */
+            http.end(); 
+
+            /* To reset WDT */
+            yield(); 
         }
         else
         {
-#if DEBUG_HTTP
-            Serial.println("Error on sending GET: " + String(httpResponseCode));
-#endif
+            #if DEBUG_HTTP
+                Serial.println("[HTTPS] WiFi not connected");
+            #endif
         }
-
-        /* Close connection */
-        http.end(); 
     }
-    else
-    {
-
-#if DEBUG_HTTP
-        Serial.println("WiFi not connected");
-#endif
-
-    }
-  }
 }
 
 /* End of Wifi Functions 
  ******************************************************/
 
-/******************************************************
- * Aux functions */
 
-void cleanup() {
-  if (lcd_ptr) {
-    delete lcd_ptr;
-    lcd_ptr = nullptr;
-  }
-  
-  if (dht_ptr) {
-    delete dht_ptr;
-    dht_ptr = nullptr;
-  }
+
+/*****************************************************
+ * AUX FUNCTIONS */
+
+/******************************** OS_CreateTasks ************************************
+  Input:   BaseType_t xReturned, const char* taskName
+  Output:  None
+  Remarks: This is a wrapper for freertos xTaskCreatePinnedToCore
+************************************************************************************/ 
+void OS_CreateTasks(void (*taskInterface)(void *),
+                    const char* taskName,
+                    uint32_t stackSize,
+                    void* taskParams,
+                    UBaseType_t priority,
+                    TaskHandle_t* taskHandler,
+                    Cores core)
+{
+    const uint8_t maxRetries = 3;
+    uint8_t attempt = 0;
+    BaseType_t xReturned = pdFAIL;
+
+    while (attempt < maxRetries)
+    {
+        xReturned = xTaskCreatePinnedToCore(
+            taskInterface,
+            taskName,
+            stackSize,
+            taskParams,
+            priority,
+            taskHandler,
+            static_cast<BaseType_t>(core)
+        );
+
+        /* Task created successfully */
+        if (xReturned == pdPASS)
+        {
+            break;  
+        }
+
+        Serial.print("[OS][WARN][Attempt ");
+        Serial.print(attempt + 1);
+        Serial.print(" failed to create task ");
+        Serial.print(taskName);
+        Serial.println(". Retrying...]");
+
+        /* Delay between tries */ 
+        vTaskDelay(pdMS_TO_TICKS(100));  
+        attempt++;
+    }
+
+    OS_ValidateTaskCreation(xReturned, taskName);
 }
 
-/* End of Aux functions
- ******************************************************/
+
+/******************************** OS_ValidateTaskCreation ***************************
+  Input:   BaseType_t xReturned, const char* taskName
+  Output:  None
+  Remarks: This function validates task creation
+************************************************************************************/ 
+void OS_ValidateTaskCreation(BaseType_t xReturned, const char* taskName)
+{
+    if (xReturned != pdPASS)
+    {
+        Serial.print("[OS][ERROR][Task ");
+        Serial.print(taskName);
+        Serial.println(" creation failed!]");
+    }
+    else
+    {
+        Serial.print("[OS][INFO][Task ");
+        Serial.print(taskName);
+        Serial.println(" successfully created.]");
+    }
+}
+
+/******************************** PSRAM_Check **************************************
+  Input:   None
+  Output:  None
+  Remarks: This function check PSRAM state if available
+************************************************************************************/ 
+void PSRAM_Check()
+{
+    if (psramInit()) 
+    {
+        Serial.println("[setup]PSRAM is initialized");
+        Serial.print("[setup][Total PSRAM: ]");
+        Serial.println(ESP.getPsramSize());
+        Serial.print("[setup][Free PSRAM: ]");
+        Serial.println(ESP.getFreePsram());
+    } 
+    else 
+    {
+        Serial.println("[setup][PSRAM is not available]");
+    }
+}
+
+/******************************** CheckObjectPointers ******************************
+  Input:   None
+  Output:  None
+  Remarks: This function check object pointers
+************************************************************************************/ 
+void CheckObjectPointers()
+{
+    if (lcd_ptr == nullptr) 
+    {
+        Serial.println("[setup][!lcd_ptr]");
+    }
+    if (dht_ptr == nullptr) 
+    {
+        Serial.println("[setup][!dht_ptr]");
+    }
+}
+
+/************************** OS_CreateTaskSemphForCores ******************************
+  Input:   None
+  Output:  None
+  Remarks: This function creates init semaphores in order to stop task running until 
+           initialisation phase is done for each core
+************************************************************************************/ 
+void OS_CreateTaskSemphForCores()
+{
+    /* Semaphore for C0 tasks */
+    xInitSemaphore_C0 = xSemaphoreCreateCounting(2, 0);
+    if (xInitSemaphore_C0 == NULL) 
+    {
+        Serial.println("[setup][Failed to create C0 semaphore]");
+        while(1); 
+    }
+    else
+    {
+      Serial.println("[setup][Created C0 semaphore]");
+    }
+
+    /* Semaphore for C1 tasks */
+    xInitSemaphore_C1 = xSemaphoreCreateBinary();
+    if (xInitSemaphore_C1 == NULL) 
+    {
+        Serial.println("[setup][Failed to create C1 semaphore]");
+        while(1); 
+    }
+    else
+    {
+        Serial.println("[setup][Created C1 semaphore]");
+    }
+}
+
+/********************************* OS_InitOS ***************************************
+  Input:   None
+  Output:  None
+  Remarks: This function initiates OS elements: semaphores and tasks 
+************************************************************************************/ 
+void OS_InitOS()
+{
+    /* Create sempahores fot init for each core */
+    OS_CreateTaskSemphForCores();
+
+    /* Create queues */
+    OS_CreateQueues();
+
+    /* Create tasks with error checking */
+    const uint8_t numTasks = sizeof(taskList) / sizeof(taskList[0]);
+    for (uint8_t i = 0; i < numTasks; ++i)
+    {
+        OS_CreateTasks(taskList[i].taskFunction,
+                       taskList[i].taskName,
+                       taskList[i].stackSize,
+                       taskList[i].params,
+                       taskList[i].priority,
+                       taskList[i].handle,
+                       taskList[i].core);
+    }
+
+}
+
+/********************************* OS_CreateQueues **********************************
+  Input:   None
+  Output:  None
+  Remarks: This function initiates queues
+************************************************************************************/ 
+void OS_CreateQueues()
+{
+    xUploadQueue = xQueueCreate(10, sizeof(SensorData));
+    if (xUploadQueue == NULL) 
+    {
+        Serial.println("[setup][Failed to create Queue ]");
+        while(1); 
+    }
+    else
+    {
+      Serial.println("[setup][Created Queue ]");
+    }
+}
+
+/********************************* SPIFFS_Init **************************************
+  Input:   None
+  Output:  bool
+  Remarks: This function initiates SPIFFS internal memory
+************************************************************************************/ 
+bool SPIFFS_Init()
+{
+    if (!SPIFFS.begin(FORMAT_SPIFFS_IF_FAILED)) 
+    {
+        Serial.println("[WiFi] Erorr at mounting SPIFFS");
+        return false;
+    }
+    Serial.println("[WiFi] Mounting SPIFFS done succsesfully");
+    return true;
+}
+
+/********************************* SPIFFS_OpenFile **************************************
+  Input:   const char* path
+  Output:  File
+  Remarks: This function opens files from SPIFFS
+************************************************************************************/ 
+File SPIFFS_OpenFile(const char* path)
+{
+    File file = SPIFFS.open(path, FILE_READ); // sau FILE_WRITE, după caz
+
+    if (!file || file.isDirectory())
+    {
+        Serial.print("[SPIFFS] Failed to open file: ");
+        Serial.println(path);
+        /* Return invalid file object */
+        return File(); 
+    }
+
+    Serial.print("[SPIFFS] File opened successfully: ");
+    Serial.println(path);
+    return file;
+
+    // Old implementation 
+    // File file = SPIFFS.open(WIFI_CONFIG_FILE);
+    // if (!file) 
+    // {
+    //     Serial.println("[WiFi] Could not open file :" WIFI_CONFIG_FILE);
+    //     return false;
+    // }
+
+}
+
+/* End of AUX FUNCTIONS 
+ *****************************************************/

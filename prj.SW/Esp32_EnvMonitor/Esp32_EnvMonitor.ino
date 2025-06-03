@@ -75,7 +75,7 @@ TaskHandle_t Task_C0_2s_handle = NULL;
 TaskHandle_t Task_C0_500ms_handle = NULL;
 
 TaskHandle_t Task_C1_Init_handle = NULL;
-TaskHandle_t Task_C1_10s_handle = NULL;
+TaskHandle_t Task_C1_60s_handle = NULL;
 
 TaskHandle_t Task_AsyncEvents_C1_handle = NULL;
 
@@ -84,7 +84,7 @@ static bool init_flag_C0 = false;
 static bool init_flag_C1 = false;
 static volatile signed long long cnt_500ms_C0 = 0;
 static volatile signed long long cnt_2s_C0 = 0;
-static volatile signed long long cnt_10s_C1 = 0;
+static volatile signed long long cnt_60s_C1 = 0;
 static volatile signed long long cnt_AsyncEvents_C1 = 0;
 
 /* Critical area mux for task counters*/
@@ -440,7 +440,7 @@ void Task_C0_2s(void *pvParameters);
 void Task_C0_500ms(void *pvParameters);
 
 void Task_C1_Init(void *pvParameters);
-void Task_C1_10s(void *pvParameters);
+void Task_C1_60s(void *pvParameters);
 
 /* This task is queue driven when alert data from mq 2 is received from the queue the task is active */
 void Task_AsyncEvents_C1(void *pvParameters);
@@ -453,7 +453,7 @@ TaskDefinition taskList[] = {
     { Task_C0_500ms,  "Task_C0_500ms",  MAJOR_TASK_SIZE_BYTES, NULL, 20, &Task_C0_500ms_handle,ESP_CORE_0 },
     /* Core 1 timed tasks */
     { Task_C1_Init,   "Task_C1_Init",   MAJOR_TASK_SIZE_BYTES, NULL, 20, &Task_C1_Init_handle, ESP_CORE_1 },
-    { Task_C1_10s,    "Task_C1_10s",    MAJOR_TASK_SIZE_BYTES, NULL, 15, &Task_C1_10s_handle,  ESP_CORE_1 },
+    { Task_C1_60s,    "Task_C1_60s",    MAJOR_TASK_SIZE_BYTES, NULL, 15, &Task_C1_60s_handle,  ESP_CORE_1 },
     /* EVent driven tasks */
     { Task_AsyncEvents_C1, "Task_AsyncEvents_C1", MAJOR_TASK_SIZE_BYTES, NULL, 20, &Task_AsyncEvents_C1_handle, ESP_CORE_1}
 };
@@ -544,7 +544,11 @@ void loop()
     DebugPrint(&sensorData, &volumeSettings);
     /* To reset WDT */
     yield(); 
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
+    #if !defined(VISA_OUTPUT)
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    #else
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
+    #endif
 }
 
 /* End of Arduino Core Functions 
@@ -1008,15 +1012,15 @@ void Task_C1_Init(void *pvParameters)
 
 }
 
-/******************************* Task_C1_10s ****************************************
+/******************************* Task_C1_60s ****************************************
   Input:   void *pvParameters
   Output:  None
-  Remarks: Task_C1_10s, calls sub-routines for Core 1 aka Wifi_SendDataToGoogleSpreadsheets
+  Remarks: Task_C1_60s, calls sub-routines for Core 1 aka Wifi_SendDataToGoogleSpreadsheets
            Takes sempahore from Task_C1_Init after init done = true
            It will not send data until Task_C0_2s is running, in order to send valid data 
            to the cloud service.
 ************************************************************************************/
-void Task_C1_10s(void *pvParameters)
+void Task_C1_60s(void *pvParameters)
 {
     if (xSemaphoreTake(xInitSemaphore_C1, portMAX_DELAY) == pdTRUE) 
     {
@@ -1025,7 +1029,7 @@ void Task_C1_10s(void *pvParameters)
           
           /* Task counter */
           portENTER_CRITICAL(&myMutex);
-          cnt_10s_C1 += 1;
+          cnt_60s_C1 += 1;
           portEXIT_CRITICAL(&myMutex);
 
           /* Task sub-routines*/
@@ -1069,8 +1073,8 @@ void Task_AsyncEvents_C1(void *pvParameters)
 
             /* Set e delay between sending data */
             TickType_t now = xTaskGetTickCount();
-            /* At least 10 seconds between sending dataframes */
-            if (now - lastSendTime >= pdMS_TO_TICKS(10000)) 
+            /* At least 100 seconds between sending dataframes */
+            if (now - lastSendTime >= pdMS_TO_TICKS(100000)) 
             {   
                 /* Send data only if data from sensors is available */
                 if(cnt_2s_C0 > 0)
@@ -1331,16 +1335,19 @@ void DebugPrint(SensorData* data, VolumeSettings* settings)
     #endif
 
     #if defined(VISA_OUTPUT)
-        Serial.print(millis());Serial.print(" ");
-        Serial.print(data->adcRawValue);Serial.print(" ");
-        Serial.print(data->adcMq2Voltage);Serial.print(" ");
-        Serial.print(data->Ro);Serial.print(" ");
-        Serial.print(data->iPPM_LPG);Serial.print(" ");
-        Serial.print(data->iPPM_CO);Serial.print(" ");
-        Serial.print(data->iPPM_Smoke);Serial.print(" ");
-        Serial.print(data->temperature);Serial.print(" ");
-        Serial.print(data->humidity);Serial.print(" ");
-        Serial.print(data->heatIndex);Serial.println(" ");
+        if (cnt_2s_C0 > 0)
+        {
+            Serial.print(millis());Serial.print(" ");
+            Serial.print(data->adcRawValue);Serial.print(" ");
+            Serial.print(data->adcMq2Voltage);Serial.print(" ");
+            Serial.print(data->Ro);Serial.print(" ");
+            Serial.print(data->iPPM_LPG);Serial.print(" ");
+            Serial.print(data->iPPM_CO);Serial.print(" ");
+            Serial.print(data->iPPM_Smoke);Serial.print(" ");
+            Serial.print(data->temperature);Serial.print(" ");
+            Serial.print(data->humidity);Serial.print(" ");
+            Serial.print(data->heatIndex);Serial.println(" ");
+        }
     #endif
 
 }

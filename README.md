@@ -121,12 +121,12 @@ Where:
 
 ### Device running normally – no alert (P1 & P2)
 
-![P1](![e24835b0-c757-4a4c-9f91-8a67ca8fb433](https://github.com/user-attachments/assets/e2474199-d8e2-43dc-83dc-570e33408d01))
-![P2](![ebee299a-0acc-4028-ad80-3f2e3c59f0c6](https://github.com/user-attachments/assets/76b687cd-4852-4772-8cea-7b9a5b71a4e9))
+![P1](https://github.com/user-attachments/assets/e2474199-d8e2-43dc-83dc-570e33408d01)
+![P2](https://github.com/user-attachments/assets/76b687cd-4852-4772-8cea-7b9a5b71a4e9)
 
 ### PPM Limit Exceeded – alert triggered (P3 & P4)
 
-![P3](![7d45ebab-dfc9-46b0-8fa4-f1316f9ed1c3](https://github.com/user-attachments/assets/647eb296-e245-4146-a4d1-be5b3d631847))
-![P4](![555918f7-b73e-473c-b298-2bae097309d8](https://github.com/user-attachments/assets/1aa83415-8ead-460b-909f-1c94f9523a2e))
+![P3](https://github.com/user-attachments/assets/647eb296-e245-4146-a4d1-be5b3d631847)
+![P4](https://github.com/user-attachments/assets/1aa83415-8ead-460b-909f-1c94f9523a2e)
 
 ---

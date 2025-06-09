@@ -117,22 +117,18 @@ Where:
 
 ---
 
----
-
 ## 🖼️ Physical Device – Real Life Implementation
 
-| ![Device Photo 1]()
-) | ![Device Photo 2]()
-) |
-|:--:|:--:|
-| *Normal operation no alerts screen 1* | * Normal operation no alerts screen 2* |
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/55fe6d29-868b-4fc0-b1cc-9c11f6ba14fb/e24835b0-c757-4a4c-9f91-8a67ca8fb433" alt="Device Normal 1" width="45%" />
+  <img src="https://github.com/user-attachments/assets/dc3b3abb-570f-43d7-8914-e58e8dc858d5/ebee299a-0acc-4028-ad80-3f2e3c59f0c6" alt="Device Normal 2" width="45%" />
+</p>
+<p align="center"><i>Device running normally – no alert (P1 & P2)</i></p>
 
-| ![Device Photo 3]![e24835b0-c757-4a4c-9f91-8a67ca8fb433](https://github.com/user-attachments/assets/55fe6d29-868b-4fc0-b1cc-9c11f6ba14fb)
-
-) | ![Device Photo 4]![ebee299a-0acc-4028-ad80-3f2e3c59f0c6](https://github.com/user-attachments/assets/dc3b3abb-570f-43d7-8914-e58e8dc858d5)
-
-) |
-|:--:|:--:|
-| *Setup in action with ppm thershold exceeded scrren 2* | *Setup in action with ppm thershold exceeded scrren 2* |
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/d8144ff3-aa1e-4c10-b1bb-f896b56bf71b/7d45ebab-dfc9-46b0-8fa4-f1316f9ed1c3" alt="Alert 1" width="45%" />
+  <img src="https://github.com/user-attachments/assets/0f40b3be-f20b-42da-a3e0-2f6063a94cf8/555918f7-b73e-473c-b298-2bae097309d8" alt="Alert 2" width="45%" />
+</p>
+<p align="center"><i>PPM Limit Exceeded – visual alert triggered (P3 & P4)</i></p>
 
 ---

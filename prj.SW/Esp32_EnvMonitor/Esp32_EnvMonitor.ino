@@ -46,18 +46,18 @@
  ******************************************************/
 
 /* Debug Settings */
-#define DEGUG_DATA true
-#define DEGUG_COUNTER true
-#define DEBUG_INIT true
+#define DEGUG_DATA false
+#define DEGUG_COUNTER false
+#define DEBUG_INIT false
 #define DEBUG_POT_PWM false
-#define DEBUG_HTTP true
+#define DEBUG_HTTP false
 #define VISA_OUTPUT true
 
 /******************************************************
  * OS SETTINGS */
 
-#define MINOR_TASK_SIZE_BYTES 8192     
-#define MAJOR_TASK_SIZE_BYTES 16384    
+#define MINOR_TASK_SIZE_BYTES 8192u    
+#define MAJOR_TASK_SIZE_BYTES 13384u  
 #define TASK_PERIOD_2S 2000u
 #define TASK_PERIOD_500MS 500u
 #define TASK_PERIOD_10S 10000u
@@ -522,7 +522,7 @@ void setup()
     vTaskDelay(1000 / portTICK_PERIOD_MS); 
     Serial.begin(115200);
     vTaskDelay(1000 / portTICK_PERIOD_MS);
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("[SW_VERSION][NAME:<Esp32_EnvMonitor_Rework_2.ino>][DATE:3.6.2025]");
     #endif
     /* Check PSRAM */
@@ -539,12 +539,21 @@ void setup()
 }
 
 void loop()
-{
+{   
+    /* Send data to Google Spreadsheets each 60 seconds */
+    static unsigned long lastSendTime = 0;
+    unsigned long now = millis();
+    if (cnt_2s_C0 > 0 && now - lastSendTime >= 60000)  
+    {
+        Wifi_SendDataToGoogleSpreadsheets(&sensorData);
+        lastSendTime = now;
+    }
+
     /* "Debugger" service */
     DebugPrint(&sensorData, &volumeSettings);
     /* To reset WDT */
     yield(); 
-    #if !defined(VISA_OUTPUT)
+    #if VISA_OUTPUT
         vTaskDelay(1000 / portTICK_PERIOD_MS);
     #else
         vTaskDelay(2000 / portTICK_PERIOD_MS);
@@ -565,7 +574,7 @@ void loop()
 ************************************************************************************/
 INIT_STATUS Port_Init()
 {
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("[SW_Setup][Port_Init] Port_Initialisation ...");
     #endif
 
@@ -587,7 +596,7 @@ INIT_STATUS Port_Init()
 
     vTaskDelay(10 / portTICK_PERIOD_MS);
 
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("[SW_Setup][Port_Init] Port_Initialisation done!");
     #endif
 
@@ -601,7 +610,7 @@ INIT_STATUS Port_Init()
 ************************************************************************************/
 INIT_STATUS Adc_Init(uint8_t sensorPin, uint8_t adcResolution, uint8_t adcAttenuation)
 {
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("[SW_Setup][Adc_Init] ADC calibration ...");
     #endif
 
@@ -619,7 +628,7 @@ INIT_STATUS Adc_Init(uint8_t sensorPin, uint8_t adcResolution, uint8_t adcAttenu
       */
     analogSetPinAttenuation(sensorPin, static_cast<adc_attenuation_t>(adcAttenuation));
 
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("[SW_Setup][Adc_Init] ADC calibrated !");
     #endif
 
@@ -634,7 +643,7 @@ INIT_STATUS Adc_Init(uint8_t sensorPin, uint8_t adcResolution, uint8_t adcAttenu
 ************************************************************************************/
 INIT_STATUS I2C_Init(uint8_t sda_pin, uint8_t scl_pin, uint32_t clk_spd)
 {
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("[SW_Setup][I2C_Init] I2c Init ...");
     #endif
 
@@ -656,7 +665,7 @@ INIT_STATUS I2C_Init(uint8_t sda_pin, uint8_t scl_pin, uint32_t clk_spd)
         if (error == 0)
         {
 
-            #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+            #if DEBUG_INIT
               Serial.print("[SW_Setup][I2C_Init] >>> I2C device found at address 0x");
               Serial.println(address, HEX);
             #endif
@@ -668,15 +677,15 @@ INIT_STATUS I2C_Init(uint8_t sda_pin, uint8_t scl_pin, uint32_t clk_spd)
 
     if (nDevices == 0)
     {
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.println("[SW_Setup][I2C_Init] >>> No I2C devices found !");
         #endif
         return INIT_FAIL;
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.println("[SW_Setup][I2C_Init] I2c Init failed !");
         #endif
     }
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("[SW_Setup][I2C_Init] I2c Init done ! ");
     #endif
     return INIT_OK;
@@ -695,7 +704,7 @@ INIT_STATUS LCD_Init(uint8_t lcd_addr, uint8_t lines, uint8_t rows, CustomCharsB
     lcd_ptr = new LiquidCrystal_I2C(lcd_addr, lines, rows);
     if (!lcd_ptr) 
     {
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("[SW_Setup][LCD_Init]Failed to allocate memory for LCD !");
     #endif
       return INIT_FAIL;
@@ -746,7 +755,7 @@ INIT_STATUS LCD_Init(uint8_t lcd_addr, uint8_t lines, uint8_t rows, CustomCharsB
 
     /*----------------------------------------*/
     vTaskDelay(10 / portTICK_PERIOD_MS);
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("[SW_Setup][LCD_Init] LCD setup done !");
     #endif
     return INIT_OK; 
@@ -764,14 +773,14 @@ INIT_STATUS Dht_Init(uint8_t dht_pin, uint8_t dht_type)
     dht_ptr = new DHT(dht_pin, dht_type);
     if (!dht_ptr) 
     {
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("[SW_Setup][DHT_Init] Failed to allocate memory for DHT !");
     #endif
         return INIT_FAIL;
       }
       dht_ptr->begin();
       vTaskDelay(2000 / portTICK_PERIOD_MS);
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("[SW_Setup][DHT_Init] DHT setup done !");
     #endif
     return INIT_OK;
@@ -785,7 +794,7 @@ INIT_STATUS Dht_Init(uint8_t dht_pin, uint8_t dht_type)
 INIT_STATUS Wifi_Init()
 {
     /* Init Wifi with Wifi callback */
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("[SW_Setup][Wifi_Init] Wifi init ...");
     #endif
     Wifi_Callback(&Wifi_SetupNetworkConnection);
@@ -866,7 +875,7 @@ void Task_C0_Init(void *pvParameters)
     /* DHT Init */
     Dht_Init(DHT_PIN, DHT_TYPE);
 
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("Calculated Ro:" + String(sensorData.Ro));
     #endif
 
@@ -907,7 +916,7 @@ void Task_C0_2s(void *pvParameters)
 
             float _Ro = sensorData.Ro;
 
-            #if defined(DEBUG_DATA) && !defined(VISA_OUTPUT)
+            #if DEBUG_DATA
                   Serial.println("*Ro: " + String(_Ro));
             #endif
 
@@ -994,7 +1003,7 @@ void Task_C1_Init(void *pvParameters)
 
     if (!init_flag_C1)
     {   
-        #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+        #if DEBUG_HTTP
             Serial.println("[WiFi Init] Not done in setup(). Suspending.");
         #endif
         vTaskSuspend(NULL);
@@ -1034,7 +1043,7 @@ void Task_C1_60s(void *pvParameters)
 
           /* Task sub-routines*/
 
-          Wifi_SendDataToGoogleSpreadsheets(&sensorData); 
+        //   Wifi_SendDataToGoogleSpreadsheets(&sensorData); 
 
           /* End of task sub-routines*/
 
@@ -1079,7 +1088,7 @@ void Task_AsyncEvents_C1(void *pvParameters)
                 /* Send data only if data from sensors is available */
                 if(cnt_2s_C0 > 0)
                 {
-                    Wifi_SendDataToGoogleSpreadsheets(&receivedData);
+                    // Wifi_SendDataToGoogleSpreadsheets(&receivedData);
                     lastSendTime = now;
                 }
 
@@ -1301,11 +1310,18 @@ void DHT_ComputeHeatIndex_Callback(SensorData* data)
 void DebugPrint(SensorData* data, VolumeSettings* settings)
 {
   
-    #if defined(DEBUG_COUNTER) && !defined(VISA_OUTPUT)
+    #if DEBUG_COUNTER 
         Serial.print("[Time: "); Serial.print(millis()); Serial.println("ms] ");
+        Serial.print("[Task_C0_Init][stat:");Serial.print(init_flag_C1);Serial.print("]");Serial.print("_|_");
+        Serial.print("[Task_C0_2s][cnt:");Serial.print(cnt_2s_C0);Serial.print("]");Serial.print("_|_");
+        Serial.print("[Task_C0_500ms][cnt:");Serial.print(cnt_500ms_C0);Serial.print("]");Serial.print("_|_");
+        Serial.print("[Task_C1_Init][stat:");Serial.print(init_flag_C1);Serial.print("]");Serial.print("_|_");
+        Serial.print("[Task_C1_60s][cnt:");Serial.print(cnt_60s_C1);Serial.print("]");Serial.print("_|_");
+        Serial.print("[Task_AsyncEvents_C1][cnt:");Serial.print(cnt_AsyncEvents_C1);Serial.print("]");Serial.println();
+
     #endif
 
-    #if defined(DEGUG_DATA) && !defined(VISA_OUTPUT)
+    #if DEGUG_DATA  
         Serial.print("* Adc_Raw: " + String(data->adcRawValue));
         Serial.print(" Vin: " + String(data->adcMq2Voltage));
         Serial.println(" Ro:" + String(data->Ro) + " kOhm");
@@ -1321,20 +1337,11 @@ void DebugPrint(SensorData* data, VolumeSettings* settings)
         Serial.println();
     #endif
 
-    #if defined(DEBUG_COUNTER) && !defined(VISA_OUTPUT)
-        Serial.print("[Task_C0_Init][stat:");Serial.print(init_flag_C1);Serial.print("]");Serial.print("_|_");
-        Serial.print("[Task_C0_2s][cnt:");Serial.print(cnt_2s_C0);Serial.print("]");Serial.print("_|_");
-        Serial.print("[Task_C0_500ms][cnt:");Serial.print(cnt_500ms_C0);Serial.print("]");Serial.print("_|_");
-        Serial.print("[Task_C1_Init][stat:");Serial.print(init_flag_C1);Serial.print("]");Serial.print("_|_");
-        Serial.print("[Task_C1_10s][cnt:");Serial.print(cnt_10s_C1);Serial.print("]");Serial.print("_|_");
-        Serial.print("[Task_AsyncEvents_C1][cnt:");Serial.print(cnt_AsyncEvents_C1);Serial.print("]");Serial.println();
-    #endif
-
-    #if defined(DEBUG_POT_PWM) && !defined(VISA_OUTPUT)
+    #if DEBUG_POT_PWM  
         Serial.println("Potentiometer DBG: " + String(settings->potValue) + " -> Duty Cycle: " + String(settings->dutyCycle));
     #endif
 
-    #if defined(VISA_OUTPUT)
+    #if VISA_OUTPUT 
         if (cnt_2s_C0 > 0)
         {
             Serial.print(millis());Serial.print(" ");
@@ -1359,37 +1366,48 @@ void DebugPrint(SensorData* data, VolumeSettings* settings)
 ************************************************************************************/ 
 void LimitAlertCheck(SensorData* data, VolumeSettings* settings)
 {
+    /* Keeps track of the previous alarm state */
+    static bool prevAlarmState = false;  
+
     long iPPM_LPG = data->iPPM_LPG;
-    long iPPM_CO = data->iPPM_CO ;
+    long iPPM_CO = data->iPPM_CO;
     long iPPM_Smoke = data->iPPM_Smoke;
 
-    /* Check gas percenatge and set alarm and led accordingly */
-    if(iPPM_LPG > GAS_LPG_ALARM_LIMIT || iPPM_CO > GAS_CO_ALARM_LIMIT ||  iPPM_Smoke > GAS_SMOKE_ALARM_LIMIT)
+    /* Check if the current readings are above the safety limits */
+    bool currentAlarmState = (iPPM_LPG > GAS_LPG_ALARM_LIMIT ||
+                              iPPM_CO > GAS_CO_ALARM_LIMIT ||
+                              iPPM_Smoke > GAS_SMOKE_ALARM_LIMIT);
+
+    /* Always reflect the real-time state through the LEDs */
+    if (currentAlarmState) 
     {
-        digitalWrite(GREEN_LED_PIN_OUT_26, LOW);
-        digitalWrite(RED_LED_PIN_OUT_32, HIGH);
-        
-        /* Non blocking update send data to the queue */
-        SensorData alertData = *data;
-        xQueueSendToBack(xUploadQueue, &alertData, 0);
-
-        // tone(BUZZER_PIN_OUT_33, 500);
-
+        digitalWrite(GREEN_LED_PIN_OUT_26, LOW);   
+        digitalWrite(RED_LED_PIN_OUT_32, HIGH);    
+        // tone(BUZZER_PIN_OUT_33, 500);           
         // ledcWrite(LEDC_CHANNEL, settings->dutyCycle);
-    }
-    else
+    } 
+    else 
     {
-        digitalWrite(GREEN_LED_PIN_OUT_26, HIGH);
-        digitalWrite(RED_LED_PIN_OUT_32, LOW);
+        digitalWrite(GREEN_LED_PIN_OUT_26, HIGH);  
+        digitalWrite(RED_LED_PIN_OUT_32, LOW);     
         // noTone(BUZZER_PIN_OUT_33);
         // ledcWrite(LEDC_CHANNEL, 0);
     }
 
-    #if defined(DEBUG_POT_PWM) && !defined(VISA_OUTPUT)
+    /* Only send alert to the queue when transitioning INTO alarm state */
+    if (currentAlarmState && !prevAlarmState) {
+        SensorData alertData = *data;
+        xQueueSendToBack(xUploadQueue, &alertData, 0);
+    }
+
+    /* Update previous state for next cycle */
+    prevAlarmState = currentAlarmState;
+
+    #if DEBUG_POT_PWM
         Serial.println("Potentiometer T100ms: " + String(settings->potValue) + " -> Duty Cycle: " + String(settings->dutyCycle));
     #endif
-
 }
+
 
 /****************************  ManageBuzzerVolume **********************************
   Input:   VolumeSettings* settings, uint8_t pot_pin
@@ -1534,7 +1552,7 @@ bool Wifi_SetupNetworkConnection()
     File file = SPIFFS_OpenFile(WIFI_CONFIG_FILE);
     if (!file)
     {
-        #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+        #if DEBUG_HTTP
             Serial.println("[WiFi] Could not open file: " WIFI_CONFIG_FILE);
         #endif
         return false;
@@ -1552,7 +1570,7 @@ bool Wifi_SetupNetworkConnection()
         String password = line.substring(sep + 1);
 
         /* Connect to Wifi networks from  WIFI_CONFIG_FILE */
-        #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+        #if DEBUG_HTTP
             Serial.printf("[WiFi] Trying connection to: %s\n", ssid.c_str());
         #endif
         WiFi.begin(ssid.c_str(), password.c_str());
@@ -1571,7 +1589,7 @@ bool Wifi_SetupNetworkConnection()
     file.close();
     if (!wifi_connected) 
     {
-        #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+        #if DEBUG_HTTP
             Serial.println("[WiFi] Could not connect to a Wifi network !");
         #endif
     }
@@ -1593,7 +1611,7 @@ void Wifi_WaitForConnection()
         vTaskDelay(100 / portTICK_PERIOD_MS);
         /* To reset WDT */
         yield();
-        #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+        #if DEBUG_HTTP
             Serial.print(".");
         #endif
     }
@@ -1609,26 +1627,26 @@ void Wifi_CheckConnectionStatus(const char* ssid)
     if (WiFi.status() == WL_CONNECTED) 
     {
         wifi_connected = true;
-        #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+        #if DEBUG_HTTP
             Serial.printf("\n[WiFi] Connected to %s | IP: %s\n", ssid, WiFi.localIP().toString().c_str());
         #endif
         digitalWrite(LED_BUILTIN, HIGH);
 
         /* Init Wifi client to test connection */
         WiFiClient client;
-        #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+        #if DEBUG_HTTP
             Serial.println("[WiFi] Test connection to google.com...");
         #endif
         if (client.connect("google.com", 80)) 
         {   
-            #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+            #if DEBUG_HTTP
                 Serial.println("[WiFi] Connection to google.com succsesful !");
             #endif
             client.stop();
         } 
         else 
         {
-            #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+            #if DEBUG_HTTP
                 Serial.println("[WiFi] Connection to google.com failed !");
             #endif
         }
@@ -1637,7 +1655,7 @@ void Wifi_CheckConnectionStatus(const char* ssid)
     } 
     else 
     {
-        #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+        #if DEBUG_HTTP
             Serial.println("\n[WiFi] Could not connect to current network, try the next one !");
         #endif
         WiFi.disconnect(true);
@@ -1674,7 +1692,7 @@ void Wifi_SendDataToGoogleSpreadsheets(SensorData* data)
             /* Init GET Request */
             if (WiFi.status() != WL_CONNECTED) 
             {
-                #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+                #if DEBUG_HTTP
                     Serial.println("[HTTPS] Not connected to WiFi.");
                 #endif
                 return;
@@ -1700,7 +1718,7 @@ void Wifi_SendDataToGoogleSpreadsheets(SensorData* data)
                 /* Close old connection */ 
                 http.end();  
 
-                #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+                #if DEBUG_HTTP
                     Serial.println("[HTTPS] Redirected to: " + redirectUrl);
                 #endif
 
@@ -1713,14 +1731,14 @@ void Wifi_SendDataToGoogleSpreadsheets(SensorData* data)
             if (httpResponseCode > 0)
             {
                 String response = http.getString();
-                #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+                #if DEBUG_HTTP
                     Serial.println("[HTTPS] HTTP Response code: " + String(httpResponseCode));
                     Serial.println("[HTTPS] Response: " + response);
                 #endif
             }
             else
             {
-                #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+                #if DEBUG_HTTP
                     Serial.println("[HTTPS] Error on sending GET: " + String(httpResponseCode));
                 #endif
             }
@@ -1736,7 +1754,7 @@ void Wifi_SendDataToGoogleSpreadsheets(SensorData* data)
         }
         else
         {
-            #if defined(DEBUG_HTTP) && !defined(VISA_OUTPUT)
+            #if DEBUG_HTTP
                 Serial.println("[HTTPS] WiFi not connected");
             #endif
         }
@@ -1786,7 +1804,7 @@ void OS_CreateTasks(void (*taskInterface)(void *),
             break;  
         }
 
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.print("[OS][WARN][Attempt ");
             Serial.print(attempt + 1);
             Serial.print(" failed to create task ");
@@ -1812,7 +1830,7 @@ void OS_ValidateTaskCreation(BaseType_t xReturned, const char* taskName)
 {
     if (xReturned != pdPASS)
     {
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.print("[OS][ERROR][Task ");
             Serial.print(taskName);
             Serial.println(" creation failed!]");
@@ -1820,7 +1838,7 @@ void OS_ValidateTaskCreation(BaseType_t xReturned, const char* taskName)
     }
     else
     {
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.print("[OS][INFO][Task ");
             Serial.print(taskName);
             Serial.println(" successfully created.]");
@@ -1837,7 +1855,7 @@ void PSRAM_Check()
 {
     if (psramInit()) 
     {
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.println("[setup]PSRAM is initialized");
             Serial.print("[setup][Total PSRAM: ]");
             Serial.println(ESP.getPsramSize());
@@ -1847,7 +1865,7 @@ void PSRAM_Check()
     } 
     else 
     {
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.println("[setup][PSRAM is not available]");
         #endif
     }
@@ -1862,13 +1880,13 @@ void CheckObjectPointers()
 {
     if (lcd_ptr == nullptr) 
     {   
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.println("[setup][!lcd_ptr]");
         #endif
     }
     if (dht_ptr == nullptr) 
     {
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.println("[setup][!dht_ptr]");
         #endif
     }
@@ -1886,14 +1904,14 @@ void OS_CreateTaskSemphForCores()
     xInitSemaphore_C0 = xSemaphoreCreateCounting(2, 0);
     if (xInitSemaphore_C0 == NULL) 
     {   
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.println("[setup][Failed to create C0 semaphore]");
         #endif
         while(1); 
     }
     else
     {
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.println("[setup][Created C0 semaphore]");
         #endif
     }
@@ -1902,14 +1920,14 @@ void OS_CreateTaskSemphForCores()
     xInitSemaphore_C1 = xSemaphoreCreateBinary();
     if (xInitSemaphore_C1 == NULL) 
     {
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.println("[setup][Failed to create C1 semaphore]");
         #endif
         while(1); 
     }
     else
     {
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.println("[setup][Created C1 semaphore]");
         #endif
     }
@@ -1953,14 +1971,14 @@ void OS_CreateQueues()
     xUploadQueue = xQueueCreate(10, sizeof(SensorData));
     if (xUploadQueue == NULL) 
     {
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.println("[setup][Failed to create Queue ]");
         #endif
         while(1); 
     }
     else
     {
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.println("[setup][Created Queue ]");
         #endif
     }
@@ -1975,12 +1993,12 @@ bool SPIFFS_Init()
 {
     if (!SPIFFS.begin(FORMAT_SPIFFS_IF_FAILED)) 
     {
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.println("[WiFi] Erorr at mounting SPIFFS");
         #endif
         return false;
     }
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.println("[WiFi] Mounting SPIFFS done succsesfully");
     #endif
     return true;
@@ -1997,7 +2015,7 @@ File SPIFFS_OpenFile(const char* path)
 
     if (!file || file.isDirectory())
     {
-        #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+        #if DEBUG_INIT
             Serial.print("[SPIFFS] Failed to open file: ");
             Serial.println(path);
         #endif
@@ -2005,7 +2023,7 @@ File SPIFFS_OpenFile(const char* path)
         return File(); 
     }
 
-    #if defined(DEBUG_INIT) && !defined(VISA_OUTPUT)
+    #if DEBUG_INIT
         Serial.print("[SPIFFS] File opened successfully: ");
         Serial.println(path);
     #endif

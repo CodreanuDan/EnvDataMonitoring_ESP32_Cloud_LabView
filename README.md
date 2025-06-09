@@ -119,14 +119,14 @@ Where:
 
 ## 🖼️ Physical Device – Real Life Implementation
 
-### Device running normally – no alert (P1 & P2)
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/e2474199-d8e2-43dc-83dc-570e33408d01" alt="P1" width="45%" />
+  <img src="https://github.com/user-attachments/assets/76b687cd-4852-4772-8cea-7b9a5b71a4e9" alt="P2" width="45%" />
+</p>
+<p align="center"><i>Device running normally – no alert (P1 & P2)</i></p>
 
-![P1](https://github.com/user-attachments/assets/e2474199-d8e2-43dc-83dc-570e33408d01)
-![P2](https://github.com/user-attachments/assets/76b687cd-4852-4772-8cea-7b9a5b71a4e9)
-
-### PPM Limit Exceeded – alert triggered (P3 & P4)
-
-![P3](https://github.com/user-attachments/assets/647eb296-e245-4146-a4d1-be5b3d631847)
-![P4](https://github.com/user-attachments/assets/1aa83415-8ead-460b-909f-1c94f9523a2e)
-
----
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/647eb296-e245-4146-a4d1-be5b3d631847" alt="P3" width="45%" />
+  <img src="https://github.com/user-attachments/assets/1aa83415-8ead-460b-909f-1c94f9523a2e" alt="P4" width="45%" />
+</p>
+<p align="center"><i>PPM Limit Exceeded – alert triggered (P3 & P4)</i></p>

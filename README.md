@@ -121,14 +121,16 @@ Where:
 
 ## 🖼️ Physical Device – Real Life Implementation
 
-| ![Device Photo 1](![e24835b0-c757-4a4c-9f91-8a67ca8fb433](https://github.com/user-attachments/assets/5b97a98d-7595-4059-b0cf-380d92458662)
-) | ![Device Photo 2](![ebee299a-0acc-4028-ad80-3f2e3c59f0c6](https://github.com/user-attachments/assets/8085f86d-e9e7-42d1-8471-3c71fb738782)
+| ![Device Photo 1]()
+) | ![Device Photo 2]()
 ) |
 |:--:|:--:|
 | *Normal operation no alerts screen 1* | * Normal operation no alerts screen 2* |
 
-| ![Device Photo 3](![7d45ebab-dfc9-46b0-8fa4-f1316f9ed1c3](https://github.com/user-attachments/assets/d952c9a2-c060-4a41-aa0a-4378e64aa764)
-) | ![Device Photo 4](![555918f7-b73e-473c-b298-2bae097309d8](https://github.com/user-attachments/assets/c83f284f-dcda-49ce-be99-310583db9e93)
+| ![Device Photo 3]![e24835b0-c757-4a4c-9f91-8a67ca8fb433](https://github.com/user-attachments/assets/55fe6d29-868b-4fc0-b1cc-9c11f6ba14fb)
+
+) | ![Device Photo 4]![ebee299a-0acc-4028-ad80-3f2e3c59f0c6](https://github.com/user-attachments/assets/dc3b3abb-570f-43d7-8914-e58e8dc858d5)
+
 ) |
 |:--:|:--:|
 | *Setup in action with ppm thershold exceeded scrren 2* | *Setup in action with ppm thershold exceeded scrren 2* |

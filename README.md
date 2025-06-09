@@ -15,7 +15,7 @@ This project consists of a **virtual instrument** (VI) designed to **monitor env
 
 The system reads data from environmental sensors and transmits it via HTTP POST to Google Sheets, enabling real-time monitoring and data storage.
 It was created and simulated firstly in Wokwi.com: 
-📄 [Link to project simultation](([https://github.com/CodreanuDan/EnvDataMonitoring_ESP32_Cloud_LabView/blob/main/prj.DOCS/Documentatie_IMPM.pdf](https://wokwi.com/projects/428946479635668993)))
+📄 [Link to project simultation](https://github.com/CodreanuDan/EnvDataMonitoring_ESP32_Cloud_LabView/blob/main/prj.DOCS/Documentatie_IMPM.pdf](https://wokwi.com/projects/428946479635668993)
 🖼️ *[![image](https://github.com/user-attachments/assets/f193f156-f02d-47e8-970d-f94a4b2154c7))]*
 ---
 

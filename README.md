@@ -78,7 +78,8 @@ The software architecture is based on two key layers:
 - 🚨 **Alert logic via thresholds/state machine**  
   ![Alert State Machine](https://github.com/user-attachments/assets/e60a227b-70b3-4f5c-9df9-735c2b177bc0)
 
-- ☁️ **Cloud integration via Google Sheets**  
+- ☁️ **Cloud integration via Google Sheets**
+- GS link: [**Google Sheets**](https://docs.google.com/spreadsheets/d/1Veu4rhDRglHRhX4o816l6GKfFPc0Og0DlyP3ij3HDZ4/edit?gid=0#gid=0).  
   ![Google Sheets Example](https://github.com/user-attachments/assets/40935e36-3817-4735-9b36-9f896d96e39d)
 
 ---

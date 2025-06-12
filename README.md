@@ -113,7 +113,7 @@ Where:
 | > 80     | 🟣 Maroon | Health hazard          |
 
 📸 *LabVIEW Interface Screenshot:*  
-![LabVIEW UI](https://github.com/user-attachments/assets/a791a8ae-99b0-4605-af1f-6fa4af44465d)
+![LabVIEW UI](https://github.com/user-attachments/assets/6d267a19-7e8a-4dc9-b8e7-0c88524c75ba)
 
 ---
 
